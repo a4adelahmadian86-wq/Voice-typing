@@ -6,7 +6,7 @@ services:
     region: frankfurt
     branch: main
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /ready
+    healthCheckPath: /health
     autoDeploy: true
     disk:
       name: farast-models
