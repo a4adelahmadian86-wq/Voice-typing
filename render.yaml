@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: farast-voice
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /ready
+    autoDeploy: true
+    disk:
+      name: farast-models
+      mountPath: /models
+      sizeGB: 10
+    envVars:
+      - key: FARAST_VOICE_TOKEN
+        generateValue: true
+      - key: FARAST_ASR_MODEL
+        value: small
+      - key: FARAST_ASR_DEVICE
+        value: cpu
+      - key: FARAST_ASR_COMPUTE_TYPE
+        value: int8
+      - key: FARAST_ASR_CPU_THREADS
+        value: "2"
+      - key: FARAST_MAX_AUDIO_BYTES
+        value: "15728640"
+      - key: FARAST_MAX_TEXT_CHARS
+        value: "1200"
+      - key: FARAST_VOICE_ID
+        value: farast-fa-male-v1
+      - key: FARAST_TTS_MODEL_PATH
+        value: /models/persian-tts-male-vits/best_model_91323.pth
+      - key: FARAST_TTS_CONFIG_PATH
+        value: /models/persian-tts-male-vits/config.json
+      - key: FARAST_TTS_AUTO_DOWNLOAD
+        value: "true"
+      - key: FARAST_TTS_MODEL_REPO
+        value: Kamtera/persian-tts-male-vits
