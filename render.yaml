@@ -23,6 +23,8 @@ services:
         value: int8
       - key: FARAST_ASR_CPU_THREADS
         value: "2"
+      - key: FARAST_ASR_MODEL_CACHE
+        value: /models/faster-whisper
       - key: FARAST_MAX_AUDIO_BYTES
         value: "15728640"
       - key: FARAST_MAX_TEXT_CHARS
