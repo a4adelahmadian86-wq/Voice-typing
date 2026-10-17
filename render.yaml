@@ -2,7 +2,7 @@ services:
   - type: web
     name: farast-voice
     runtime: docker
-    plan: starter
+    plan: 2c-8g
     region: frankfurt
     branch: main
     dockerfilePath: ./Dockerfile
