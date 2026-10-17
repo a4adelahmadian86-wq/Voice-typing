@@ -5,9 +5,9 @@ This repository is a dedicated Python service for FARAST voice input/output. It 
 ## Honest availability and cost constraints
 
 - Render's Free web service sleeps after 15 minutes without inbound traffic, has 512 MB RAM / 0.1 CPU, and does not provide persistent disks. It cannot reliably run these local speech models or meet the requirement to stay active.
-- `render.yaml` intentionally defines an always-on paid service and persistent disk. **Creating it can incur charges. Review the current price in Render before approving any deployment.** No service has been created by committing these files.
+- `render.yaml` intentionally defines a paid always-on service with 2 CPU / 8 GB RAM (`2c-8g`) and a 10 GB persistent disk. This is not a low-cost starter tier: compute and disk are billed, and the final price depends on Render's current pricing and workspace. **Review the exact price in Render before approving deployment.** No service has been created by committing these files.
 - A paid service avoids free-tier idle sleep, but no cloud host can promise literally zero restarts. Persistent model storage and health checks make restarts recoverable.
-- This repository cannot guarantee Render is reachable from every Iranian ISP. You have already confirmed its website opens; the deployed service and model-download hosts must also be reachable from the running container.
+- This repository cannot guarantee Render is reachable from every Iranian ISP. You have confirmed its website opens; the deployed service URL must also be reachable from your Laravel host and browser. Initial model setup downloads weights from Hugging Face, so that download must work from the Render container or the weights must be uploaded by an alternate route. After weights are stored on the persistent disk, speech inference itself does not call Hugging Face or any third-party inference API.
 - No keep-alive pinger or sleep-policy workaround is used.
 
 ## What is included
@@ -22,7 +22,7 @@ This repository is a dedicated Python service for FARAST voice input/output. It 
 ## Deploy
 
 1. Connect this repository to Render: https://dashboard.render.com/
-2. Choose **New → Blueprint** (not Web Service), and select this repository's `main` branch.
+2. Choose **New → Blueprint** (not Web Service), and select this repository's `main` branch. If Render prompts for a payment method or the displayed price is unaffordable, stop here—do not create the paid resource.
 3. Render will read `render.yaml`. Review the paid plan and disk cost shown in the UI. Do not proceed if you do not accept those charges.
 4. Create a long random secret for `FARAST_VOICE_TOKEN` in Render's environment-variable prompt. Never commit a real token.
 5. Confirm the service has a persistent disk mounted at `/models`.
