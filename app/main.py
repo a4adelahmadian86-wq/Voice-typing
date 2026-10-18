@@ -7,7 +7,8 @@ from typing import Optional
 
 import edge_tts
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -24,10 +25,13 @@ GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 app = FastAPI(title=APP_NAME, version="0.2.0")
 
 
-def authorize(authorization: Optional[str] = Header(default=None)) -> None:
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def authorize(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> None:
     if not API_TOKEN:
         raise HTTPException(status_code=503, detail="Voice gateway is not configured")
-    if not authorization or not secrets.compare_digest(authorization, f"Bearer {API_TOKEN}"):
+    if credentials is None or not secrets.compare_digest(credentials.credentials, API_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
