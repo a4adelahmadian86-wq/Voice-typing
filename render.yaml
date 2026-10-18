@@ -1,41 +1,26 @@
 services:
   - type: web
     name: farast-voice
-    runtime: docker
-    plan: 2c-8g
+    runtime: python
+    plan: free
     region: frankfurt
-    branch: main
-    dockerfilePath: ./Dockerfile
+    branch: free-groq-edge-tts
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      name: farast-models
-      mountPath: /models
-      sizeGB: 10
     envVars:
       - key: FARAST_VOICE_TOKEN
         generateValue: true
-      - key: FARAST_ASR_MODEL
-        value: small
-      - key: FARAST_ASR_DEVICE
-        value: cpu
-      - key: FARAST_ASR_COMPUTE_TYPE
-        value: int8
-      - key: FARAST_ASR_CPU_THREADS
-        value: "2"
-      - key: FARAST_ASR_MODEL_CACHE
-        value: /models/faster-whisper
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_ASR_MODEL
+        value: whisper-large-v3-turbo
+      - key: FARAST_EDGE_TTS_VOICE
+        value: fa-IR-FaridNeural
+      - key: FARAST_VOICE_ID
+        value: farast-fa-male-v1
       - key: FARAST_MAX_AUDIO_BYTES
         value: "15728640"
       - key: FARAST_MAX_TEXT_CHARS
         value: "1200"
-      - key: FARAST_VOICE_ID
-        value: farast-fa-male-v1
-      - key: FARAST_TTS_MODEL_PATH
-        value: /models/persian-tts-male-vits/best_model_91323.pth
-      - key: FARAST_TTS_CONFIG_PATH
-        value: /models/persian-tts-male-vits/config.json
-      - key: FARAST_TTS_AUTO_DOWNLOAD
-        value: "true"
-      - key: FARAST_TTS_MODEL_REPO
-        value: Kamtera/persian-tts-male-vits
