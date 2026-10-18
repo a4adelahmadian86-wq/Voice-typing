@@ -1,6 +1,5 @@
 fastapi==0.115.12
 python-multipart==0.0.20
-soundfile==0.13.1
-numpy<2.0
 pytest==8.3.5
 httpx==0.28.1
+edge-tts==7.2.7
