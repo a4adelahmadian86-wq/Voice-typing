@@ -1,69 +1,46 @@
-# FARAST Voice — self-hosted Persian speech service
+# FARAST Voice — free-tier API gateway (experimental)
 
-This repository is a dedicated Python service for FARAST voice input/output. It is separate from the Laravel website and does **not** call a hosted speech-inference API. Laravel remains responsible for user authentication, permissions, AI intent handling, document commands, transactions, history, and rendering.
+This branch replaces the large local Whisper and Coqui models with a lightweight gateway:
+- Speech recognition: Groq's hosted Whisper API (whisper-large-v3-turbo).
+- Persian speech output: Microsoft's Edge online TTS through the community edge-tts client, using the fixed fa-IR-FaridNeural voice.
+- FastAPI protects the gateway with a separate bearer token. Laravel must keep both provider and gateway credentials server-side.
 
-## Honest availability and cost constraints
+## Important limitations — read before deployment
 
-- Render's Free web service sleeps after 15 minutes without inbound traffic, has 512 MB RAM / 0.1 CPU, and does not provide persistent disks. It cannot reliably run these local speech models or meet the requirement to stay active.
-- `render.yaml` intentionally defines a paid always-on service with 2 CPU / 8 GB RAM (`2c-8g`) and a 10 GB persistent disk. This is not a low-cost starter tier: compute and disk are billed, and the final price depends on Render's current pricing and workspace. **Review the exact price in Render before approving deployment.** No service has been created by committing these files.
-- A paid service avoids free-tier idle sleep, but no cloud host can promise literally zero restarts. Persistent model storage and health checks make restarts recoverable.
-- This repository cannot guarantee Render is reachable from every Iranian ISP. You have confirmed its website opens; the deployed service URL must also be reachable from your Laravel host and browser. Initial model setup downloads weights from Hugging Face, so that download must work from the Render container or the weights must be uploaded by an alternate route. After weights are stored on the persistent disk, speech inference itself does not call Hugging Face or any third-party inference API.
-- No keep-alive pinger or sleep-policy workaround is used.
+- **This is a cost-minimizing experiment, not a guarantee of free unlimited service.** Groq's free tier has rate/audio limits and may change; check the account's current limits and billing dashboard.
+- edge-tts accesses an online Microsoft Edge speech endpoint through a community client, not a documented guaranteed free production API. It can be blocked, throttled, or changed by the provider. Test Persian output from the actual hosting region and the site's network before relying on it.
+- Render Free web services can spin down after inactivity. This avoids the prior 512 MB out-of-memory crash because no local ML weights are loaded, but **it does not provide guaranteed always-on uptime**. A cold start and third-party outage remain possible. Do not describe a 14-minute ping as a guarantee.
+- Free hosting/provider availability from Iranian networks is not guaranteed. Confirm connectivity to both Groq and the speech endpoint from the actual deployed host.
+- No API key belongs in JavaScript, Git, or logs.
 
-## What is included
+## Deploy on Render Free
 
-- FastAPI API for ASR and TTS.
-- Bearer-token authentication for inference endpoints.
-- Fixed Persian voice ID `farast-fa-male-v1`, with no browser or alternate-voice fallback.
-- CPU-first faster-whisper ASR.
-- Docker image and Render Blueprint.
-- Health/readiness endpoints and contract tests.
+1. Open the repository in Render and create a Web Service from branch free-groq-edge-tts.
+2. Select the Python runtime (not Docker). The Blueprint file describes a Free instance.
+3. Add GROQ_API_KEY as a secret environment variable. Create a long random FARAST_VOICE_TOKEN; Render can generate it.
+4. Deploy and verify /health, then /ready.
+5. Verify Persian audio using POST /v1/synthesize and a short Persian recording using POST /v1/transcribe before changing the live Laravel settings.
 
-## Deploy
+## API contract
 
-1. Connect this repository to Render: https://dashboard.render.com/
-2. Choose **New → Blueprint** (not Web Service), and select this repository's `main` branch. If Render prompts for a payment method or the displayed price is unaffordable, stop here—do not create the paid resource.
-3. Render will read `render.yaml`. Review the paid plan and disk cost shown in the UI. Do not proceed if you do not accept those charges.
-4. Create a long random secret for `FARAST_VOICE_TOKEN` in Render's environment-variable prompt. Never commit a real token.
-5. Confirm the service has a persistent disk mounted at `/models`.
-6. Deploy. The first boot downloads model files and may take a while. Watch Logs. Model downloads require outbound access to Hugging Face; inference itself runs on this service.
-7. Test `https://YOUR-SERVICE.onrender.com/health`. For actual readiness, `/ready` must return HTTP 200 with both `asr_ready` and `tts_ready` true. A failed readiness check means the models did not load; do not connect Laravel yet.
-8. In Render's service settings, confirm HTTPS is enabled and the disk remains attached.
+- GET /health: basic public health; never returns secrets.
+- GET /ready: verifies required configuration is present (not a live provider check).
+- GET /v1/status: bearer-token-protected configuration status.
+- POST /v1/transcribe: multipart fields audio, locale; returns {"text":"..."}. Supported locales: fa-IR, en-US, ar-SA.
+- POST /v1/synthesize: JSON {"text":"سلام","language":"fa-IR","voice_id":"farast-fa-male-v1"}; returns MPEG audio.
 
-## Endpoints
+## Laravel environment
 
-- `GET /health`: public basic status; no secrets.
-- `GET /ready`: provider health check; returns 503 until both models load.
-- `GET /v1/status`: bearer-token-protected readiness.
-- `POST /v1/transcribe`: bearer-token-protected multipart upload fields `audio`, `locale` (default `fa-IR`); response `{"text":"..." }`.
-- `POST /v1/synthesize`: bearer-token-protected JSON `{"text":"سلام","language":"fa-IR","voice_id":"farast-fa-male-v1"}`; response is WAV audio.
+Set these on the Laravel server only:
 
-## Laravel connection
+    FARAST_VOICE_ASR_URL=https://YOUR-SERVICE.onrender.com/v1/transcribe
+    FARAST_VOICE_ASR_TOKEN=the-gateway-token
+    FARAST_VOICE_TTS_URL=https://YOUR-SERVICE.onrender.com/v1/synthesize
+    FARAST_VOICE_TTS_TOKEN=the-gateway-token
+    FARAST_VOICE_TTS_VOICE_ID=farast-fa-male-v1
 
-Set the following in the Laravel host's server-side environment panel (never in JavaScript or committed files):
+Both ASR and TTS currently use the same gateway token. Clear Laravel's config cache after changing environment values if the hosting platform requires it.
 
-```dotenv
-FARAST_VOICE_ASR_URL=https://YOUR-SERVICE.onrender.com/v1/transcribe
-FARAST_VOICE_ASR_TOKEN=the-same-random-token
-FARAST_VOICE_TTS_URL=https://YOUR-SERVICE.onrender.com/v1/synthesize
-FARAST_VOICE_TTS_TOKEN=the-same-random-token
-FARAST_VOICE_TTS_VOICE_ID=farast-fa-male-v1
-```
+## What remains unverified
 
-Clear Laravel's config cache if the host supports it. The current Laravel integration must be checked against this service contract and tested before production.
-
-## Model and voice notes
-
-- ASR defaults to faster-whisper `small`, CPU/int8. Accuracy and latency for Persian must be tested with real recordings.
-- TTS uses the single-speaker Persian model [Kamtera/persian-tts-male-vits](https://huggingface.co/Kamtera/persian-tts-male-vits). The pinned checkpoint filename is `best_model_91323.pth`; model files are downloaded once into persistent `/models` on startup. Verify repository filenames, model loading compatibility, and license terms for your use before production.
-- `farast-fa-male-v1` is a stable configuration identifier, not proof of a particular acoustic identity until the model has successfully loaded and been evaluated. Keep the same checkpoint, config, and inference parameters after acceptance testing. Never silently switch voices.
-- This handles speech recognition and speech synthesis only. It does not replace the Laravel AI/intent engine. If that engine still uses a blocked third-party LLM API, the whole assistant is not yet independent of external APIs.
-
-## Local tests
-
-```sh
-python -m pip install -r requirements-dev.txt
-pytest -q
-```
-
-These are API-contract tests, not model-quality or live-deployment tests. Model weights are intentionally not stored in Git.
+The code contract can be tested without provider credentials, but live Groq transcription, Edge TTS Persian audio, Iranian network reachability, Render deployment, and Laravel end-to-end playback have not yet been verified. Do not merge to main until those checks pass.
