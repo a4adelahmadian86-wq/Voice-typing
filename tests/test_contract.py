@@ -43,3 +43,11 @@ def test_ready_requires_configuration(monkeypatch):
     monkeypatch.setattr(main, "GROQ_API_KEY", "")
     response = TestClient(main.app).get("/ready")
     assert response.status_code == 503
+
+
+
+def test_openapi_documents_bearer_auth():
+    schema = TestClient(main.app).get("/openapi.json").json()
+    assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+    assert schema["paths"]["/v1/status"]["get"]["security"] == [{"HTTPBearer": []}]
+    assert schema["paths"]["/v1/synthesize"]["post"]["security"] == [{"HTTPBearer": []}]
