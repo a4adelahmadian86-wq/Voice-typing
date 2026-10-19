@@ -75,7 +75,7 @@ def test_synthesize_returns_nonempty_mpeg_audio(monkeypatch):
 
 def test_synthesize_returns_error_when_provider_returns_no_audio(monkeypatch):
     async def fake_empty_audio(_text):
-        return b""
+        raise RuntimeError("TTS provider returned empty audio")
 
     monkeypatch.setattr(main, "synthesize_mp3", fake_empty_audio)
     response = TestClient(main.app).post(
@@ -83,6 +83,5 @@ def test_synthesize_returns_error_when_provider_returns_no_audio(monkeypatch):
         headers={"Authorization": "Bearer test-token-for-contract-tests"},
         json={"text": "سلام", "language": "fa-IR", "voice_id": main.VOICE_ID},
     )
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/mpeg")
-    assert response.content == b""
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Persian speech synthesis provider is unavailable"
