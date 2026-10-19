@@ -51,3 +51,38 @@ def test_openapi_documents_bearer_auth():
     assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
     assert schema["paths"]["/v1/status"]["get"]["security"] == [{"HTTPBearer": []}]
     assert schema["paths"]["/v1/synthesize"]["post"]["security"] == [{"HTTPBearer": []}]
+
+
+def test_synthesize_returns_nonempty_mpeg_audio(monkeypatch):
+    async def fake_audio(_text):
+        return b"ID3" + (b"\x00" * 2048)
+
+    monkeypatch.setattr(main, "synthesize_mp3", fake_audio)
+    response = TestClient(main.app).post(
+        "/v1/synthesize",
+        headers={"Authorization": "Bearer test-token-for-contract-tests"},
+        json={
+            "text": "سلام، به فراست خوش آمدید.",
+            "language": "fa-IR",
+            "voice_id": main.VOICE_ID,
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.headers["x-farast-tts-provider"] == "microsoft-edge-tts"
+    assert len(response.content) > 1024
+
+
+def test_synthesize_returns_error_when_provider_returns_no_audio(monkeypatch):
+    async def fake_empty_audio(_text):
+        return b""
+
+    monkeypatch.setattr(main, "synthesize_mp3", fake_empty_audio)
+    response = TestClient(main.app).post(
+        "/v1/synthesize",
+        headers={"Authorization": "Bearer test-token-for-contract-tests"},
+        json={"text": "سلام", "language": "fa-IR", "voice_id": main.VOICE_ID},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.content == b""
