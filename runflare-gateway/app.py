@@ -213,7 +213,7 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
                 schema_hint = "Return only valid JSON matching this schema: " + json.dumps(schema, ensure_ascii=False)
                 system_message = next((item for item in messages if isinstance(item, dict) and item.get("role") == "system"), None)
                 if system_message is not None:
-                    system_message["content"] = str(system_message.get("content", "")) + "\\n\\n" + schema_hint
+                    system_message["content"] = str(system_message.get("content", "")) + "\n\n" + schema_hint
                 else:
                     messages.insert(0, {"role": "system", "content": schema_hint})
             # Groq JSON mode is the portable fallback; Laravel validates the returned shape.
