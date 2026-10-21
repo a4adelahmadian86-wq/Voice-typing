@@ -8,4 +8,4 @@ ENV PORT=8000 \
 
 # Override the upstream image entrypoint so Runflare environment variables can be expanded.
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["exec /app/llama-server -hf \"${LLAMA_MODEL_REPO}:${LLAMA_MODEL_QUANT}\" --host 0.0.0.0 --port \"${PORT:-8000}\" --ctx-size \"${LLAMA_CTX_SIZE:-2048}\" --threads \"${LLAMA_THREADS:-1}\" --threads-batch \"${LLAMA_THREADS:-1}\" --parallel 1 --api-key \"${LLAMA_API_KEY:?Set LLAMA_API_KEY in Runflare}\" --no-webui"]
+CMD ["exec /app/llama-server -hf \"${LLAMA_MODEL_REPO}:${LLAMA_MODEL_QUANT}\" --host 0.0.0.0 --port \"${PORT:-8000}\" --ctx-size \"${LLAMA_CTX_SIZE:-2048}\" --threads \"${LLAMA_THREADS:-1}\" --threads-batch \"${LLAMA_THREADS:-1}\" --parallel 1 --api-key \"${LLAMA_API_KEY:?Set LLAMA_API_KEY in Runflare}\" --chat-template-kwargs '{\"enable_thinking\":false}' --no-webui"]
