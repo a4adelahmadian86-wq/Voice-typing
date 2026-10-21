@@ -12,11 +12,11 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST AI Gateway"
 API_TOKEN = os.getenv("FARAST_GATEWAY_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
-GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+GROQ_API_KEY = ""  # Disabled by product policy; do not route requests to Groq.
+GEMINI_API_KEY = ""  # Disabled by product policy; do not route requests to Gemini.
+GROQ_ASR_MODEL = "whisper-large-v3"
+GROQ_CHAT_MODEL = "openai/gpt-oss-20b"
+GEMINI_MODEL = "gemini-3.8-flash"
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
