@@ -9,7 +9,7 @@ This is a lightweight, stateless API gateway for FARAST. It deliberately does **
 - \`GET /v1/status\`: authenticated readiness without returning keys.
 - \`POST /v1/transcribe\`: Bearer-authenticated multipart \`audio\` + \`locale\`; Groq Whisper Large v3 first, existing Render service as fallback.
 - \`POST /v1/synthesize\`: Bearer-authenticated JSON \`text\`, \`language\`, \`voice_id\`; Microsoft Edge TTS first (Persian, English, Arabic), Render TTS as fallback. Returns MP3.
-- \`POST /v1/chat/completions\`: OpenAI-compatible chat request; Gemini first by default, Groq fallback. This gives FARAST one multi-purpose API contract for chat, summarization, writing, and agent text generation.
+- \`POST /v1/chat/completions\`: OpenAI-compatible chat request; Gemini 3.8 Flash first by default, Groq GPT-OSS 20B fallback. This gives FARAST one multi-purpose API contract for chat, summarization, writing, and agent text generation.
 
 All \`/v1/*\` endpoints require \`Authorization: Bearer FARAST_GATEWAY_TOKEN\`. Keep provider keys and this token in Runflare's server-side environment settings only. Never put them in browser JavaScript or Git.
 
@@ -20,8 +20,8 @@ All \`/v1/*\` endpoints require \`Authorization: Bearer FARAST_GATEWAY_TOKEN\`. 
 - ASR fallback order: Groq Whisper Large v3 -> Render ASR (if URL and token are configured).
 - Whisper selection is quality-first: Groq's current documentation recommends `whisper-large-v3` for error-sensitive multilingual transcription (listed at $0.111 per audio hour) and `whisper-large-v3-turbo` for lower-cost throughput (listed at $0.04 per audio hour). Quotas and prices can change; verify the account dashboard. Change `GROQ_ASR_MODEL` to `whisper-large-v3-turbo` if latency/cost is more important than the best accuracy tier.
 - TTS fallback order: Edge TTS -> Render TTS (if URL and token are configured).
-- LLM fallback order: Gemini (default primary) -> Groq, or the reverse if \`AI_PRIMARY_PROVIDER=groq\`.
-- A provider's free quota, rate limit, region access, terms, and availability still apply. The gateway cannot guarantee that an upstream provider is free or reachable.
+- LLM fallback order: Gemini 3.8 Flash (default primary) -> Groq GPT-OSS 20B, or the reverse if \`AI_PRIMARY_PROVIDER=groq\`.
+- Groq currently lists GPT-OSS 20B at $0.075 per million input tokens and $0.30 per million output tokens; GPT-OSS 120B is stronger but costs more ($0.15/$0.60 per million). The configured 20B model is the cost-conscious fallback; set `GROQ_CHAT_MODEL=openai/gpt-oss-120b` if higher quality is worth the extra cost. A provider's free quota, rate limit, region access, terms, and availability still apply. The gateway cannot guarantee that an upstream provider is free or reachable.
 - Privacy warning: the Gemini API free tier states that submitted content may be used to improve Google's products. Do not route confidential documents through a free-tier provider unless that use is acceptable under the site's privacy policy and the user's selected processing mode. Review current provider terms before production; a paid tier has different data-use terms.
 - Runflare's free service is documented as non-production, with no backup guarantee, and is deleted after three months. Do not store user data, database state, or secrets on its disk.
 
