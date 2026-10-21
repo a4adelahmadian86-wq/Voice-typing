@@ -18,6 +18,7 @@ All \`/v1/*\` endpoints require \`Authorization: Bearer FARAST_GATEWAY_TOKEN\`. 
 - No model weights are stored on the 3 GB disk; this keeps the deployment small and easy to recreate.
 - The gateway is stateless. Settings live in environment variables and source lives in GitHub.
 - ASR fallback order: Groq Whisper Large v3 -> Render ASR (if URL and token are configured).
+- Whisper selection is quality-first: Groq's current documentation recommends `whisper-large-v3` for error-sensitive multilingual transcription (listed at $0.111 per audio hour) and `whisper-large-v3-turbo` for lower-cost throughput (listed at $0.04 per audio hour). Quotas and prices can change; verify the account dashboard. Change `GROQ_ASR_MODEL` to `whisper-large-v3-turbo` if latency/cost is more important than the best accuracy tier.
 - TTS fallback order: Edge TTS -> Render TTS (if URL and token are configured).
 - LLM fallback order: Gemini (default primary) -> Groq, or the reverse if \`AI_PRIMARY_PROVIDER=groq\`.
 - A provider's free quota, rate limit, region access, terms, and availability still apply. The gateway cannot guarantee that an upstream provider is free or reachable.
