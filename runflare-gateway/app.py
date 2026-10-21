@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from typing import Optional
@@ -203,6 +204,20 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         raise RuntimeError(f"{provider} is not configured")
     body = dict(payload)
     body["model"] = model
+    if provider == "groq":
+        output_format = body.get("response_format")
+        if isinstance(output_format, dict) and output_format.get("type") == "json_schema":
+            schema = (output_format.get("json_schema") or {}).get("schema")
+            messages = body.get("messages")
+            if schema and isinstance(messages, list):
+                schema_hint = "Return only valid JSON matching this schema: " + json.dumps(schema, ensure_ascii=False)
+                system_message = next((item for item in messages if isinstance(item, dict) and item.get("role") == "system"), None)
+                if system_message is not None:
+                    system_message["content"] = str(system_message.get("content", "")) + "\\n\\n" + schema_hint
+                else:
+                    messages.insert(0, {"role": "system", "content": schema_hint})
+            # Groq JSON mode is the portable fallback; Laravel validates the returned shape.
+            body["response_format"] = {"type": "json_object"}
     async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
         response = await client.post(
             url,
