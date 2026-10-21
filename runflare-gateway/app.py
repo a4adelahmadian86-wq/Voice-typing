@@ -217,12 +217,17 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
     if isinstance(source_messages, list):
         copied = [dict(item) for item in source_messages if isinstance(item, dict)]
         system_message = next((item for item in copied if item.get("role") == "system"), None)
-        recent = [item for item in copied if item.get("role") != "system"][-5:]
+        recent = [item for item in copied if item.get("role") != "system"][-4:]
         body["messages"] = ([system_message] if system_message else []) + recent
-        for item in body["messages"]:
+        for index, item in enumerate(body["messages"]):
             content = item.get("content")
             if isinstance(content, str):
-                limit = 2200 if item.get("role") == "system" else 1000
+                if item.get("role") == "system":
+                    limit = 1000
+                elif index == len(body["messages"]) - 1 and item.get("role") == "user":
+                    limit = 900
+                else:
+                    limit = 400
                 item["content"] = content[:limit]
         if body["messages"] and body["messages"][-1].get("role") == "user":
             last_content = str(body["messages"][-1].get("content", ""))
