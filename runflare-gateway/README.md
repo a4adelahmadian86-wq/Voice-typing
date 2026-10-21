@@ -1,55 +1,50 @@
 # FARAST AI Gateway — Runflare
 
-FARAST uses two small Runflare Docker services:
+FARAST's browser talks only to the authenticated Laravel application. Laravel calls this gateway server-to-server; no model weights, tokenizer, Whisper package, or AI runtime are downloaded to visitors' devices.
 
-- `runflare-llm`: self-hosted Qwen3 1.7B Q4_K_M through the official `llama.cpp` server image. This is the local primary text model, with deliberately limited context/output and one inference slot.
-- `runflare-gateway`: authenticated API router for speech recognition, TTS, and OpenAI-compatible chat. It routes ordinary text requests to local Qwen and can route explicit farast-heavy/colab-heavy requests to an optional Colab OpenAI-compatible tunnel. Groq and Gemini are disabled by product policy. Speech uses the configured Render ASR fallback; TTS uses Edge TTS then Render.
+## Production inference design
 
-The local Qwen model is a modest general-text engine, not ChatGPT-class. It may be slow on 1.5 CPU cores and can be wrong on complex Persian instructions. Do not use it as the authority for account permissions, billing, transactions, or other deterministic application rules. High-quality cloud fallback is optional and may incur provider quotas/costs or send content outside Runflare.
+- `runflare-gateway`: authenticated API router, request limits, provider selection and fallback.
+- Cloudflare Workers AI: preferred server-side text and speech-recognition provider when configured. General requests use `@cf/qwen/qwen3-30b-a3b-fp8`; explicit `farast-heavy` requests use `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; audio transcription uses `@cf/openai/whisper-large-v3-turbo`.
+- `runflare-llm`: self-hosted Qwen3 1.7B Q4_K_M on Runflare as the fallback for text generation if Cloudflare is unavailable or its free daily allocation is exhausted.
+- Render ASR/TTS: optional fallback only. Free Render web services spin down after 15 minutes without inbound traffic and can take about a minute to wake, so this is not treated as a zero-downtime primary.
+- Persian speech synthesis: server-side Edge TTS first, Render TTS fallback. Edge TTS is a community client to an online speech endpoint, not a guaranteed production API.
+
+**Free quota, stated honestly:** Cloudflare Workers AI includes 10,000 Neurons per day at no charge. The allocation is shared across models and resets daily; once it is exhausted, inference requests fail until reset unless the account has a paid plan. See [Cloudflare pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/) and [model limits](https://developers.cloudflare.com/workers-ai/platform/limits/). This can provide materially stronger model quality than a 1.7B CPU model for modest traffic, but it is not unlimited free production capacity.
+
+**Why Colab is not the production inference server:** Google says free managed Colab runtimes may be terminated when used to bypass the notebook UI for web-based content generation and prohibits distributed workers without a positive compute-unit balance. Therefore no keep-alive loop or fake uptime promise is implemented. Colab can still be used by the developer for evaluation and experimentation, but the public site must not depend on a free Colab notebook staying alive. See the [official Colab FAQ](https://research.google.com/colaboratory/faq.html).
 
 ## Routes
 
 - `GET /health`: public gateway liveness only.
-- `GET /ready`: configuration readiness booleans; it does not test live upstream health.
-- `GET /v1/status`: authenticated readiness without returning keys.
-- `POST /v1/transcribe`: Bearer-authenticated multipart `audio` + `locale`; Configured Render ASR (Groq is disabled).
-- `POST /v1/synthesize`: Bearer-authenticated JSON `text`, `language`, `voice_id`; Microsoft Edge TTS first (Persian, English, Arabic), Render TTS fallback. Returns MP3.
-- `POST /v1/chat/completions`: OpenAI-compatible chat request; local Qwen by default; requests with model farast-heavy or colab-heavy use the configured Colab tunnel first and fall back to local Qwen if the Colab request fails. With `stream: true`, the local Qwen route returns real SSE token chunks; if local streaming is unavailable, a configured cloud provider is wrapped in SSE after its full response arrives.
+- `GET /ready`: configuration readiness booleans; it does not test live upstream inference.
+- `GET /v1/status`: authenticated configuration status without secrets.
+- `POST /v1/transcribe`: Bearer-authenticated multipart `audio` + `locale`; Cloudflare Whisper first, Render ASR fallback.
+- `POST /v1/synthesize`: Bearer-authenticated JSON `text`, `language`, `voice_id`; server-side Edge TTS first, Render fallback. Returns MP3.
+- `POST /v1/chat/completions`: OpenAI-compatible chat; Cloudflare Qwen3-30B-A3B first, Cloudflare Llama 3.3 70B for explicit `farast-heavy` requests, Runflare Qwen 1.7B fallback. SSE streaming is forwarded from the selected upstream where supported; if upstream streaming fails, the gateway retries using a complete response and wraps it in SSE.
 
-All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep provider keys and gateway/model-service tokens in server-side environment settings only. Never put them in browser JavaScript or Git.
+All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep account IDs and provider keys in server-side environment settings only. Never put them in browser JavaScript or Git. The Laravel-to-gateway token must be distinct from the Cloudflare API token.
 
 ## Resource design
 
-- Qwen3-1.7B Q4_K_M weights are about 1.28 GB. The model service uses one CPU thread, one concurrent slot, a 2,048-token context and at most 160 output tokens to reduce memory pressure.
-- Runflare's free plan currently lists 3 GB RAM, 1.5 CPU, 3 GB disk, Tehran cluster, two deployments, and three-month expiry. Verify the terms in the dashboard before relying on them. This is a constrained hobby/test setup, not guaranteed production hosting.
-- The LLM service downloads model weights at startup and caches them in the service filesystem. The weights are not stored in GitHub. If the service is deleted after three months, the replacement downloads the model again.
-- FARAST AI model weights are never downloaded to visitor browsers. Whisper/ASR inference must run on Render or an explicitly configured server-side runtime.
-- Local ASR currently produces progressive text by short recording segments; it is not yet true token-by-token audio streaming. The live voice conversation path still needs a dedicated end-to-end streaming implementation (local/streaming ASR, streamed LLM tokens, incremental TTS, interruption handling).
-- ASR route: Render ASR if URL/token are configured. Groq and Gemini are disabled by product policy.
-- TTS fallback order: Edge TTS -> Render TTS if URL/token are configured. Edge TTS is a community client to an online speech endpoint, not a guaranteed production API.
-- LLM route: local Qwen for ordinary requests; an explicit farast-heavy or colab-heavy model alias selects the configured Colab tunnel, with local Qwen as fallback. Colab is temporary and may disconnect; this gateway only checks its availability on demand and does not attempt to bypass Colab session limits.
-- Runflare's free service has no backup/durability guarantee and is deleted after three months. Do not store user data, database state, or secrets on its disk.
+- Runflare's published free hosting currently lists 3 GB RAM, 1.5 CPU, 3 GB disk, two deployments, and a three-month term. Confirm availability and terms in the account dashboard before relying on them. This is a constrained hobby/test allocation, not a production SLA.
+- The Qwen3-1.7B Q4_K_M model file is about 1.28 GB. The model service uses one CPU thread, one concurrent slot, a 2,048-token context and bounded output to reduce memory pressure.
+- The Runflare model service downloads weights on the server at startup. These weights are never delivered to visitors. If the service is deleted, the replacement downloads the model again.
+- The Render free tier spins down after 15 minutes idle and may restart at any time; use it only as a fallback, not as the only service users depend on.
+- The gateway reports which upstream answered using `X-Farast-AI-Provider`. If Cloudflare reaches its daily limit and the local model answers instead, the provider header identifies the lower-capacity fallback. This is not presented as equivalent model quality.
+- This gateway does not store conversations or audio itself. The Laravel app remains responsible for user authorization, quotas, audit records and persistence.
 
 ## First deployment
 
-1. Create two Docker services in Runflare, both using the free plan: one with build/deploy root `runflare-llm`, another with root `runflare-gateway`. The free plan allows two deployments according to the current public page; confirm this in the account.
-2. In the model service, set `LLAMA_API_KEY` to a long random secret. Deploy the `runflare-llm` folder. Wait until the model service `GET /health` returns HTTP 200; the first start downloads around 1.28 GB and can take several minutes.
-3. Copy the model service HTTPS URL. In the gateway service environment, set `FARAST_LOCAL_LLM_URL` to that URL, `FARAST_LOCAL_LLM_API_KEY` to the same value as `LLAMA_API_KEY`, `FARAST_LOCAL_LLM_MODEL=Qwen3-1.7B-Q4_K_M`, and `AI_PRIMARY_PROVIDER=local`.
-4. Add `FARAST_GATEWAY_TOKEN` (long random secret). Configure the Render ASR/TTS URL and token variables as needed. Do not configure Groq or Gemini; those providers are disabled. To use a heavy Colab model, configure `FARAST_COLAB_LLM_URL`, `FARAST_COLAB_LLM_API_KEY`, and `FARAST_COLAB_LLM_MODEL` after you start and expose the notebook API.
-5. Deploy the gateway folder and verify `/health`, `/ready`, and authenticated `/v1/status`. Then test a short Persian chat prompt and a real Persian audio recording. Do not connect production traffic until those tests pass.
-6. The repository root includes `deploy-runflare-stack.ps1`. After the two services exist and their environment variables are set, run it from Windows to deploy both folders in sequence. The script resets Runflare's cached deploy root before each folder and asks you to select the model service, then the gateway service.
+1. Create two Docker services in Runflare: one with build/deploy root `runflare-llm`, another with root `runflare-gateway`. The free hosting page lists two deployments, but verify current availability in the account.
+2. In the model service, set `LLAMA_API_KEY` to a long random secret. Deploy `runflare-llm`. Wait until the model service `GET /health` returns HTTP 200; the first start downloads around 1.28 GB and can take several minutes.
+3. Copy the model service HTTPS URL. In the gateway service environment, set `FARAST_LOCAL_LLM_URL` to that URL, `FARAST_LOCAL_LLM_API_KEY` to the same secret as `LLAMA_API_KEY`, and `FARAST_LOCAL_LLM_MODEL=Qwen3-1.7B-Q4_K_M`.
+4. Create a Cloudflare account and an account-scoped API token with Workers AI permissions. Enter `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in the gateway's server-side environment. Do not commit the token.
+5. Set a unique `FARAST_GATEWAY_TOKEN`. Configure Render ASR/TTS URL/token only if you want those fallback services.
+6. Deploy the gateway and verify `/health`, `/ready`, and authenticated `/v1/status`. Then make a real authenticated chat request and transcribe a real Persian recording. Contract tests alone do not establish live provider availability or Persian accuracy.
+7. In Laravel's server environment set `FARAST_AI_GATEWAY_URL` to the gateway's HTTPS base URL and `FARAST_AI_GATEWAY_TOKEN` to the exact same `FARAST_GATEWAY_TOKEN`. Then test the public site's assistant and voice routes end to end.
 
-## Recreate after the three-month expiry
-
-Runflare deletes expired services and their data, so no script can resurrect a deleted service or recreate it without account-owner action. To keep reactivation simple:
-
-1. Create two replacement Docker services in Runflare and note their URLs.
-2. Re-enter the saved secrets in the new model and gateway service settings (do not paste secrets into chat or commit them).
-3. Update `FARAST_LOCAL_LLM_URL` in the gateway settings to the new model-service URL.
-4. Run `deploy-runflare-stack.ps1`. It resets the cached deploy root between services; select the replacement model service and then the replacement gateway service. The new model service will download Qwen again; no model file needs to be copied manually.
-5. Update Laravel's server-side `FARAST_AI_GATEWAY_URL` and `FARAST_AI_GATEWAY_TOKEN` if the gateway URL/token changed; update voice ASR/TTS URLs if needed.
-
-The script makes code deployment repeatable; the Runflare dashboard service creation and secure environment entry still require the account owner.
+The repository root includes `deploy-runflare-stack.ps1` to deploy the two Runflare services. Account creation, dashboard service setup, Cloudflare token creation and secret entry still require the account owner; this repository change cannot perform those account-side actions.
 
 ## Local tests
 
@@ -59,4 +54,4 @@ pytest -q
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-These tests validate API contracts and fallback ordering. They do not prove live Persian model quality, Runflare memory/latency, Render reachability, or end-to-end live voice conversation.
+These tests validate API contracts, routing and fallback behavior. They do not prove live Persian model quality, Cloudflare account configuration, Runflare latency/memory, Render reachability, or full live voice conversation.
