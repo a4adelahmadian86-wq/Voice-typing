@@ -2,7 +2,7 @@ name: runflare-ai-gateway-tests
 
 on:
   push:
-    branches: [runflare-ai-gateway]
+    branches: [main, runflare-ai-gateway]
     paths:
       - "runflare-gateway/**"
       - ".github/workflows/runflare-gateway.yml"
