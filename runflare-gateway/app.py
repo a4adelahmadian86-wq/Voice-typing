@@ -20,6 +20,9 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
+COLAB_LLM_URL = os.getenv("FARAST_COLAB_LLM_URL", "").strip().rstrip("/")
+COLAB_LLM_API_KEY = os.getenv("FARAST_COLAB_LLM_API_KEY", "").strip()
+COLAB_LLM_MODEL = os.getenv("FARAST_COLAB_LLM_MODEL", "farast-heavy").strip()
 AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "local").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
@@ -61,7 +64,7 @@ def health() -> dict:
 def ready() -> dict:
     asr_ready = bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN))
     tts_ready = True
-    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
+    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or (COLAB_LLM_URL and COLAB_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
     return {
         "status": "ready" if asr_ready and tts_ready and llm_ready else "degraded",
         "asr_ready": asr_ready,
@@ -77,6 +80,7 @@ def status() -> dict:
         "tts_ready": True,
         "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
         "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "colab_llm_configured": bool(COLAB_LLM_URL and COLAB_LLM_API_KEY),
         "primary_llm": AI_PRIMARY_PROVIDER,
         "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
         "tts_engine": "edge-tts-with-render-fallback",
@@ -244,6 +248,11 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         url = LOCAL_LLM_URL
         if not url.endswith("/v1/chat/completions"):
             url += "/v1/chat/completions"
+    elif provider == "colab":
+        key = COLAB_LLM_API_KEY
+        if not COLAB_LLM_URL:
+            raise RuntimeError("Colab LLM URL is not configured")
+        url = COLAB_LLM_URL if COLAB_LLM_URL.endswith("/v1/chat/completions") else COLAB_LLM_URL + "/v1/chat/completions"
     elif provider == "gemini":
         key = GEMINI_API_KEY
         url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -284,7 +293,9 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
 
 async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     # Try the local llama.cpp server as a true token stream first.
-    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+    requested_model_for_stream = str(payload.get("model") or "").strip()
+    heavy_requested = requested_model_for_stream in {"farast-heavy", "colab-heavy"}
+    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY and not heavy_requested:
         client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
         upstream = None
         try:
@@ -324,14 +335,21 @@ async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     # If local streaming is unavailable, wrap the first working provider's complete response
     # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
     requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    requested_model = str(payload.get("model") or "").strip()
+    if requested_model in {"farast-heavy", "colab-heavy"} and COLAB_LLM_URL and COLAB_LLM_API_KEY:
+        primary = "colab"
+    else:
+        primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq", "colab"} else "local"
+    order = [primary] + [provider for provider in ("colab", "local", "gemini", "groq") if provider != primary]
     fallback_payload = dict(payload)
     fallback_payload["stream"] = False
     for provider in order:
         if provider == "local":
             continue
-        if provider == "gemini":
+        if provider == "colab":
+            if not (COLAB_LLM_URL and COLAB_LLM_API_KEY): continue
+            model = COLAB_LLM_MODEL
+        elif provider == "gemini":
             if not GEMINI_API_KEY: continue
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
         else:
@@ -366,13 +384,20 @@ async def chat_completions(payload: dict) -> Response:
         return await _stream_chat_completions(payload)
 
     requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    if requested_model in {"farast-heavy", "colab-heavy"} and COLAB_LLM_URL and COLAB_LLM_API_KEY:
+        primary = "colab"
+    else:
+        primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq", "colab"} else "local"
+    order = [primary] + [provider for provider in ("colab", "local", "gemini", "groq") if provider != primary]
     last_status = 503
     for provider in order:
         if provider == "local":
             model = LOCAL_LLM_MODEL
             if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+                continue
+        elif provider == "colab":
+            model = COLAB_LLM_MODEL
+            if not (COLAB_LLM_URL and COLAB_LLM_API_KEY):
                 continue
         elif provider == "gemini":
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
