@@ -219,6 +219,15 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         raise RuntimeError(f"{provider} is not configured")
     body = dict(payload)
     body["model"] = model
+    if provider == "local":
+        # Keep output bounded on Runflare's 1.5-CPU free plan.
+        requested_tokens = body.get("max_tokens", body.get("max_completion_tokens", 256))
+        try:
+            body["max_tokens"] = min(256, max(1, int(requested_tokens)))
+        except (TypeError, ValueError):
+            body["max_tokens"] = 256
+        body.pop("max_completion_tokens", None)
+        body.pop("top_k", None)
     if provider == "gemini":
         # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
         body.pop("temperature", None)
