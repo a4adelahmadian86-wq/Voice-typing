@@ -7,7 +7,7 @@ from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST AI Gateway"
@@ -201,6 +201,36 @@ async def synthesize(request: SynthesizeRequest) -> Response:
     )
 
 
+def _prepare_local_payload(payload: dict, model: str) -> dict:
+    body = dict(payload)
+    body["model"] = model
+    # Keep output bounded on Runflare's 1.5-CPU free plan.
+    requested_tokens = body.get("max_tokens", body.get("max_completion_tokens", 160))
+    try:
+        body["max_tokens"] = min(160, max(1, int(requested_tokens)))
+    except (TypeError, ValueError):
+        body["max_tokens"] = 160
+    body.pop("max_completion_tokens", None)
+    body.pop("top_k", None)
+    # Keep prompt/context bounded for the 2,048-token, 3 GB RAM deployment.
+    source_messages = body.get("messages")
+    if isinstance(source_messages, list):
+        copied = [dict(item) for item in source_messages if isinstance(item, dict)]
+        system_message = next((item for item in copied if item.get("role") == "system"), None)
+        recent = [item for item in copied if item.get("role") != "system"][-5:]
+        body["messages"] = ([system_message] if system_message else []) + recent
+        for item in body["messages"]:
+            content = item.get("content")
+            if isinstance(content, str):
+                limit = 2200 if item.get("role") == "system" else 1000
+                item["content"] = content[:limit]
+        if body["messages"] and body["messages"][-1].get("role") == "user":
+            last_content = str(body["messages"][-1].get("content", ""))
+            if not last_content.endswith("/no_think"):
+                body["messages"][-1]["content"] = last_content + "\n/no_think"
+    return body
+
+
 async def _chat_provider_request(provider: str, model: str, payload: dict) -> tuple[int, bytes, str]:
     if provider == "local":
         key = LOCAL_LLM_API_KEY
@@ -217,31 +247,8 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         url = "https://api.groq.com/openai/v1/chat/completions"
     if not key:
         raise RuntimeError(f"{provider} is not configured")
-    body = dict(payload)
+    body = _prepare_local_payload(payload, model) if provider == "local" else dict(payload)
     body["model"] = model
-    if provider == "local":
-        # Keep output bounded on Runflare's 1.5-CPU free plan.
-        requested_tokens = body.get("max_tokens", body.get("max_completion_tokens", 256))
-        try:
-            body["max_tokens"] = min(160, max(1, int(requested_tokens)))
-        except (TypeError, ValueError):
-            body["max_tokens"] = 160
-        body.pop("max_completion_tokens", None)
-        body.pop("top_k", None)
-        # Keep prompt/context bounded for the 2,048-token, 3 GB RAM deployment.
-        source_messages = body.get("messages")
-        if isinstance(source_messages, list):
-            copied = [dict(item) for item in source_messages if isinstance(item, dict)]
-            system_message = next((item for item in copied if item.get("role") == "system"), None)
-            recent = [item for item in copied if item.get("role") != "system"][-5:]
-            body["messages"] = ([system_message] if system_message else []) + recent
-            for item in body["messages"]:
-                content = item.get("content")
-                if isinstance(content, str):
-                    limit = 2200 if item.get("role") == "system" else 1000
-                    item["content"] = content[:limit]
-            if body["messages"] and body["messages"][-1].get("role") == "user":
-                body["messages"][-1]["content"] = str(body["messages"][-1].get("content", "")) + "\n/no_think"
     if provider == "gemini":
         # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
         body.pop("temperature", None)
@@ -270,11 +277,88 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
     return response.status_code, response.content, response.headers.get("content-type", "application/json")
 
 
+async def _stream_chat_completions(payload: dict) -> StreamingResponse:
+    # Try the local llama.cpp server as a true token stream first.
+    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+        client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+        upstream = None
+        try:
+            url = LOCAL_LLM_URL if LOCAL_LLM_URL.endswith("/v1/chat/completions") else LOCAL_LLM_URL + "/v1/chat/completions"
+            body = _prepare_local_payload(payload, LOCAL_LLM_MODEL)
+            body["stream"] = True
+            request = client.build_request(
+                "POST", url,
+                headers={"Authorization": f"Bearer {LOCAL_LLM_API_KEY}", "Content-Type": "application/json", "Accept": "text/event-stream"},
+                json=body,
+            )
+            upstream = await client.send(request, stream=True)
+            if upstream.is_success:
+                async def relay():
+                    try:
+                        async for chunk in upstream.aiter_raw():
+                            if chunk:
+                                yield chunk
+                    finally:
+                        await upstream.aclose()
+                        await client.aclose()
+                return StreamingResponse(
+                    relay(), media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": "local"},
+                )
+            await upstream.aread()
+            await upstream.aclose()
+        except Exception:
+            if upstream is not None:
+                try: await upstream.aclose()
+                except Exception: pass
+        finally:
+            # The streaming response owns the client after success; on errors close it here.
+            if upstream is None or not upstream.is_success:
+                await client.aclose()
+
+    # If local streaming is unavailable, wrap the first working provider's complete response
+    # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
+    requested_model = str(payload.get("model") or "").strip()
+    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
+    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    fallback_payload = dict(payload)
+    fallback_payload["stream"] = False
+    for provider in order:
+        if provider == "local":
+            continue
+        if provider == "gemini":
+            if not GEMINI_API_KEY: continue
+            model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
+        else:
+            if not GROQ_API_KEY: continue
+            model = GROQ_CHAT_MODEL
+        try:
+            code, raw, content_type = await _chat_provider_request(provider, model, fallback_payload)
+            if not 200 <= code < 300: continue
+            data = json.loads(raw.decode("utf-8"))
+            answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not isinstance(answer, str) or not answer.strip(): continue
+            async def one_shot_sse(text: str):
+                for offset in range(0, len(text), 24):
+                    frame = {"choices": [{"index": 0, "delta": {"content": text[offset:offset + 24]}}]}
+                    yield ("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n").encode("utf-8")
+                yield b"data: [DONE]\n\n"
+            return StreamingResponse(
+                one_shot_sse(answer), media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": provider},
+            )
+        except Exception:
+            continue
+    raise HTTPException(status_code=503, detail="AI text streaming is temporarily unavailable")
+
+
 @app.post("/v1/chat/completions", dependencies=[Depends(authorize)])
 async def chat_completions(payload: dict) -> Response:
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=422, detail="messages must be a non-empty array")
+    if payload.get("stream") is True:
+        return await _stream_chat_completions(payload)
 
     requested_model = str(payload.get("model") or "").strip()
     primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
