@@ -112,6 +112,24 @@ def test_synthesize_prefers_edge_tts_and_returns_mp3(client, monkeypatch):
     assert response.content == b"fake-mp3-data"
 
 
+
+def test_synthesize_supports_english_voice(client, monkeypatch):
+    async def fake_edge(text, language):
+        assert text == "Hello FARAST"
+        assert language == "en-US"
+        return b"english-mp3-data"
+
+    monkeypatch.setattr(gateway, "_edge_synthesize", fake_edge)
+    response = client.post(
+        "/v1/synthesize",
+        headers=auth(),
+        json={"text": "Hello FARAST", "language": "en-US", "voice_id": "farast-fa-male-v1"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.content == b"english-mp3-data"
+
+
 def test_synthesize_falls_back_to_render_when_edge_tts_fails(client, monkeypatch):
     monkeypatch.setattr(gateway, "RENDER_TTS_URL", "https://render.example/v1/synthesize")
     monkeypatch.setattr(gateway, "RENDER_TTS_TOKEN", "render-secret")
