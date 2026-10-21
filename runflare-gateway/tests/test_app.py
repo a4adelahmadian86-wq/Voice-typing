@@ -270,9 +270,10 @@ def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
     assert captured["url"] == "https://local-llm.example/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer local-test-key"
     assert captured["body"]["max_tokens"] == 160
-    assert len(captured["body"]["messages"]) <= 6
-    assert len(captured["body"]["messages"][0]["content"]) <= 2200
+    assert len(captured["body"]["messages"]) <= 5
+    assert len(captured["body"]["messages"][0]["content"]) <= 1000
     assert captured["body"]["messages"][-1]["content"].endswith("/no_think")
+    assert len(captured["body"]["messages"][-1]["content"]) <= 909
     assert len(payload["messages"]) == len(original_messages)
     assert json.loads(body) == {"ok": True}
 
