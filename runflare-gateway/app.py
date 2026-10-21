@@ -19,6 +19,8 @@ GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile").strip(
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "gemini").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
+EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
+EDGE_TTS_AR_VOICE = os.getenv("EDGE_TTS_AR_VOICE", "ar-SA-HamedNeural").strip()
 FARAST_VOICE_ID = os.getenv("FARAST_VOICE_ID", "farast-fa-male-v1").strip()
 RENDER_ASR_URL = os.getenv("FARAST_RENDER_ASR_URL", "").strip()
 RENDER_ASR_TOKEN = os.getenv("FARAST_RENDER_ASR_TOKEN", "").strip()
@@ -143,10 +145,11 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
     raise HTTPException(status_code=503, detail="Speech recognition is temporarily unavailable")
 
 
-async def _edge_synthesize(text: str) -> bytes:
+async def _edge_synthesize(text: str, language: str) -> bytes:
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, voice=EDGE_TTS_VOICE)
+    voices = {"fa-IR": EDGE_TTS_VOICE, "en-US": EDGE_TTS_EN_VOICE, "ar-SA": EDGE_TTS_AR_VOICE}
+    communicate = edge_tts.Communicate(text, voice=voices[language])
     parts: list[bytes] = []
     async for chunk in communicate.stream():
         if chunk.get("type") == "audio" and chunk.get("data"):
@@ -173,13 +176,13 @@ async def _render_synthesize(text: str, language: str) -> bytes:
 
 @app.post("/v1/synthesize", dependencies=[Depends(authorize)])
 async def synthesize(request: SynthesizeRequest) -> Response:
-    if request.language != "fa-IR":
-        raise HTTPException(status_code=400, detail="Only Persian TTS is configured")
+    if request.language not in LOCALE_TO_LANGUAGE:
+        raise HTTPException(status_code=400, detail="Unsupported TTS language")
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty")
     try:
-        audio = await _edge_synthesize(text)
+        audio = await _edge_synthesize(text, request.language)
         engine = "edge-tts"
     except Exception:
         try:
