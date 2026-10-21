@@ -111,25 +111,6 @@ async def _cloudflare_transcribe(filename: str, data: bytes, mime: str, locale: 
     return transcript
 
 
-async def _groq_transcribe(filename: str, data: bytes, mime: str, language: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("Groq ASR is not configured")
-    payload = {"model": GROQ_ASR_MODEL, "language": language, "temperature": "0", "response_format": "json"}
-    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
-        response = await client.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            data=payload,
-            files={"file": (filename, data, mime)},
-        )
-    if not response.is_success:
-        raise RuntimeError(f"Groq ASR returned HTTP {response.status_code}")
-    text = str(response.json().get("text", "")).strip()
-    if not text:
-        raise RuntimeError("Groq ASR returned empty text")
-    return text
-
-
 async def _render_transcribe(filename: str, data: bytes, mime: str, locale: str) -> str:
     if not RENDER_ASR_URL or not RENDER_ASR_TOKEN:
         raise RuntimeError("Render ASR fallback is not configured")
@@ -157,23 +138,20 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
         raise HTTPException(status_code=400, detail="Audio file is empty")
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Audio exceeds configured size limit")
-    filename = (audio.filename or "recording.webm").replace("/", "_").replace("\\", "_")[:128]
+    filename = (audio.filename or "recording.webm").replace("/", "_").replace(chr(92), "_")[:128]
     mime = audio.content_type or "application/octet-stream"
-
-    if GROQ_API_KEY:
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
         try:
-            text = await _groq_transcribe(filename, data, mime, LOCALE_TO_LANGUAGE[locale])
-            return {"text": text, "engine": "groq-whisper", "model": GROQ_ASR_MODEL}
+            transcript = await _cloudflare_transcribe(filename, data, mime, locale)
+            return {"text": transcript, "engine": "cloudflare-workers-ai", "model": CLOUDFLARE_ASR_MODEL}
         except Exception:
             pass
-
     if RENDER_ASR_URL and RENDER_ASR_TOKEN:
         try:
-            text = await _render_transcribe(filename, data, mime, locale)
-            return {"text": text, "engine": "render-fallback", "model": "configured-render-asr"}
+            transcript = await _render_transcribe(filename, data, mime, locale)
+            return {"text": transcript, "engine": "render-asr-fallback", "model": "configured-render-asr"}
         except Exception:
             pass
-
     raise HTTPException(status_code=503, detail="Speech recognition is temporarily unavailable")
 
 
