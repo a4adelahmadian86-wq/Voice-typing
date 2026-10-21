@@ -37,7 +37,7 @@ All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep
 3. Copy the model service HTTPS URL. In the gateway service environment, set `FARAST_LOCAL_LLM_URL` to that URL, `FARAST_LOCAL_LLM_API_KEY` to the same value as `LLAMA_API_KEY`, `FARAST_LOCAL_LLM_MODEL=Qwen3-1.7B-Q4_K_M`, and `AI_PRIMARY_PROVIDER=local`.
 4. Add `FARAST_GATEWAY_TOKEN` (long random secret). Add `GROQ_API_KEY` and/or `GEMINI_API_KEY` only if you want optional cloud fallbacks. Configure Render fallback URL/token variables if desired.
 5. Deploy the gateway folder and verify `/health`, `/ready`, and authenticated `/v1/status`. Then test a short Persian chat prompt and a real Persian audio recording. Do not connect production traffic until those tests pass.
-6. The repository root includes `deploy-runflare-stack.ps1`. After the two services exist and their environment variables are set, run it from Windows to deploy both folders in sequence. The CLI may ask you to select the target service on first deploy or after recreating it.
+6. The repository root includes `deploy-runflare-stack.ps1`. After the two services exist and their environment variables are set, run it from Windows to deploy both folders in sequence. The script resets Runflare's cached deploy root before each folder and asks you to select the model service, then the gateway service.
 
 ## Recreate after the three-month expiry
 
@@ -46,7 +46,7 @@ Runflare deletes expired services and their data, so no script can resurrect a d
 1. Create two replacement Docker services in Runflare and note their URLs.
 2. Re-enter the saved secrets in the new model and gateway service settings (do not paste secrets into chat or commit them).
 3. Update `FARAST_LOCAL_LLM_URL` in the gateway settings to the new model-service URL.
-4. Run `deploy-runflare-stack.ps1`. The new model service will download Qwen again; no model file needs to be copied manually.
+4. Run `deploy-runflare-stack.ps1`. It resets the cached deploy root between services; select the replacement model service and then the replacement gateway service. The new model service will download Qwen again; no model file needs to be copied manually.
 5. Update Laravel's server-side `FARAST_AI_GATEWAY_URL` and `FARAST_AI_GATEWAY_TOKEN` if the gateway URL/token changed; update voice ASR/TTS URLs if needed.
 
 The script makes code deployment repeatable; the Runflare dashboard service creation and secure environment entry still require the account owner.
