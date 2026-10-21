@@ -223,11 +223,25 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         # Keep output bounded on Runflare's 1.5-CPU free plan.
         requested_tokens = body.get("max_tokens", body.get("max_completion_tokens", 256))
         try:
-            body["max_tokens"] = min(256, max(1, int(requested_tokens)))
+            body["max_tokens"] = min(160, max(1, int(requested_tokens)))
         except (TypeError, ValueError):
-            body["max_tokens"] = 256
+            body["max_tokens"] = 160
         body.pop("max_completion_tokens", None)
         body.pop("top_k", None)
+        # Keep prompt/context bounded for the 2,048-token, 3 GB RAM deployment.
+        source_messages = body.get("messages")
+        if isinstance(source_messages, list):
+            copied = [dict(item) for item in source_messages if isinstance(item, dict)]
+            system_message = next((item for item in copied if item.get("role") == "system"), None)
+            recent = [item for item in copied if item.get("role") != "system"][-5:]
+            body["messages"] = ([system_message] if system_message else []) + recent
+            for item in body["messages"]:
+                content = item.get("content")
+                if isinstance(content, str):
+                    limit = 2200 if item.get("role") == "system" else 1000
+                    item["content"] = content[:limit]
+            if body["messages"] and body["messages"][-1].get("role") == "user":
+                body["messages"][-1]["content"] = str(body["messages"][-1].get("content", "")) + "\\n/no_think"
     if provider == "gemini":
         # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
         body.pop("temperature", None)
