@@ -22,6 +22,9 @@ def client(monkeypatch):
     monkeypatch.setattr(gateway, "API_TOKEN", "test-gateway-token")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "")
     monkeypatch.setattr(gateway, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(gateway, "COLAB_LLM_URL", "")
+    monkeypatch.setattr(gateway, "COLAB_LLM_API_KEY", "")
+    monkeypatch.setattr(gateway, "COLAB_LLM_MODEL", "farast-heavy")
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
@@ -348,3 +351,32 @@ def test_streaming_wraps_full_groq_fallback_as_sse(client, monkeypatch):
     assert response.headers["x-farast-ai-provider"] == "groq"
     assert "پاسخ پشتیبان" in response.text
     assert "[DONE]" in response.text
+
+def test_heavy_model_routes_to_colab_when_configured(client, monkeypatch):
+    monkeypatch.setattr(gateway, "COLAB_LLM_URL", "https://colab-tunnel.example")
+    monkeypatch.setattr(gateway, "COLAB_LLM_API_KEY", "colab-test-key")
+    monkeypatch.setattr(gateway, "COLAB_LLM_MODEL", "qwen-heavy-test")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
+    calls = []
+
+    async def fake_provider(provider, model, payload):
+        calls.append((provider, model))
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ مدل سنگین"}}]}).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-heavy", "messages": [{"role": "user", "content": "تحلیل پیچیده"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-ai-provider"] == "colab"
+    assert calls == [("colab", "qwen-heavy-test")]
+
+
+def test_colab_status_is_explicitly_unconfigured_when_no_tunnel(client):
+    response = client.get("/v1/colab/status", headers=auth())
+    assert response.status_code == 200
+    assert response.json() == {"configured": False, "reachable": False, "reason": "not_configured"}
