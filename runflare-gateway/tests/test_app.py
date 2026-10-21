@@ -323,3 +323,27 @@ def test_chat_completions_streams_local_llm_sse(client, monkeypatch):
     assert captured["body"]["stream"] is True
     assert captured["body"]["max_tokens"] == 160
     assert "[DONE]" in response.text
+
+def test_streaming_wraps_full_groq_fallback_as_sse(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
+
+    async def fake_provider(provider, model, payload):
+        assert provider == "groq"
+        assert payload.get("stream") is False
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ پشتیبان"}}]}, ensure_ascii=False).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "stream": True, "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-farast-ai-provider"] == "groq"
+    assert "پاسخ پشتیبان" in response.text
+    assert "[DONE]" in response.text
