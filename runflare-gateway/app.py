@@ -17,7 +17,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
-AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "gemini").strip().lower()
+LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
+LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
+LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
+AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "local").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
 EDGE_TTS_AR_VOICE = os.getenv("EDGE_TTS_AR_VOICE", "ar-SA-HamedNeural").strip()
@@ -58,7 +61,7 @@ def health() -> dict:
 def ready() -> dict:
     asr_ready = bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN))
     tts_ready = True
-    llm_ready = bool(GEMINI_API_KEY or GROQ_API_KEY)
+    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
     return {
         "status": "ready" if asr_ready and tts_ready and llm_ready else "degraded",
         "asr_ready": asr_ready,
@@ -72,7 +75,8 @@ def status() -> dict:
     return {
         "asr_ready": bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN)),
         "tts_ready": True,
-        "llm_ready": bool(GEMINI_API_KEY or GROQ_API_KEY),
+        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
+        "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
         "primary_llm": AI_PRIMARY_PROVIDER,
         "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
         "tts_engine": "edge-tts-with-render-fallback",
@@ -198,7 +202,14 @@ async def synthesize(request: SynthesizeRequest) -> Response:
 
 
 async def _chat_provider_request(provider: str, model: str, payload: dict) -> tuple[int, bytes, str]:
-    if provider == "gemini":
+    if provider == "local":
+        key = LOCAL_LLM_API_KEY
+        if not LOCAL_LLM_URL:
+            raise RuntimeError("Local LLM URL is not configured")
+        url = LOCAL_LLM_URL
+        if not url.endswith("/v1/chat/completions"):
+            url += "/v1/chat/completions"
+    elif provider == "gemini":
         key = GEMINI_API_KEY
         url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     else:
@@ -243,11 +254,15 @@ async def chat_completions(payload: dict) -> Response:
         raise HTTPException(status_code=422, detail="messages must be a non-empty array")
 
     requested_model = str(payload.get("model") or "").strip()
-    primary = "groq" if AI_PRIMARY_PROVIDER == "groq" else "gemini"
-    order = [primary, "groq" if primary == "gemini" else "gemini"]
+    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
+    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
     last_status = 503
     for provider in order:
-        if provider == "gemini":
+        if provider == "local":
+            model = LOCAL_LLM_MODEL
+            if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+                continue
+        elif provider == "gemini":
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
             if not GEMINI_API_KEY:
                 continue
