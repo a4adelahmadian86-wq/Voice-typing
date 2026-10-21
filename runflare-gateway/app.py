@@ -5,7 +5,6 @@ import os
 import secrets
 from typing import Optional
 
-import edge_tts
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -145,6 +144,8 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
 
 
 async def _edge_synthesize(text: str) -> bytes:
+    import edge_tts
+
     communicate = edge_tts.Communicate(text, voice=EDGE_TTS_VOICE)
     parts: list[bytes] = []
     async for chunk in communicate.stream():
