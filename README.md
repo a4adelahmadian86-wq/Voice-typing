@@ -1,8 +1,8 @@
 # FARAST Voice — free-tier API gateway (experimental)
 
 This branch replaces the large local Whisper and Coqui models with a lightweight gateway:
-- Speech recognition: Groq's hosted Whisper API (whisper-large-v3-turbo).
-- Persian speech output: Microsoft's Edge online TTS through the community edge-tts client, using the fixed fa-IR-FaridNeural voice.
+- Speech recognition: Groq's hosted Whisper API (whisper-large-v3 by default for accuracy; switch to turbo only if latency/quota trade-offs are needed).
+- Persian speech output: Microsoft's Edge online TTS through the community edge-tts client, using the fixed fa-IR-FaridNeural voice. A single short retry is attempted and MP3 bytes are validated before they are returned.
 - FastAPI protects the gateway with a separate bearer token. Laravel must keep both provider and gateway credentials server-side.
 
 ## Important limitations — read before deployment
@@ -17,7 +17,7 @@ This branch replaces the large local Whisper and Coqui models with a lightweight
 
 1. Open the repository in Render and create a Web Service from branch free-groq-edge-tts.
 2. Select the Python runtime (not Docker). The Blueprint file describes a Free instance.
-3. Add GROQ_API_KEY as a secret environment variable. Create a long random FARAST_VOICE_TOKEN; Render can generate it.
+3. Add GROQ_API_KEY as a secret environment variable. Create a long random FARAST_VOICE_TOKEN; Render can generate it. The Blueprint defaults to `whisper-large-v3` for better transcription accuracy; change `GROQ_ASR_MODEL` to `whisper-large-v3-turbo` only if you prefer lower latency and accept the accuracy trade-off.
 4. Deploy and verify /health, then /ready.
 5. Verify Persian audio using POST /v1/synthesize and a short Persian recording using POST /v1/transcribe before changing the live Laravel settings.
 
