@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import app as gateway  # noqa: E402
+_gateway_path = Path(__file__).resolve().parents[1] / "app.py"
+_spec = importlib.util.spec_from_file_location("runflare_gateway_app", _gateway_path)
+assert _spec is not None and _spec.loader is not None
+gateway = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = gateway
+_spec.loader.exec_module(gateway)
 
 
 @pytest.fixture
