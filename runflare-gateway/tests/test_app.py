@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import app as gateway  # noqa: E402
+
+
+@pytest.fixture
+def client(monkeypatch):
+    monkeypatch.setattr(gateway, "API_TOKEN", "test-gateway-token")
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "")
+    monkeypatch.setattr(gateway, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(gateway, "RENDER_ASR_URL", "")
+    monkeypatch.setattr(gateway, "RENDER_ASR_TOKEN", "")
+    monkeypatch.setattr(gateway, "RENDER_TTS_URL", "")
+    monkeypatch.setattr(gateway, "RENDER_TTS_TOKEN", "")
+    return TestClient(gateway.app)
+
+
+def auth():
+    return {"Authorization": "Bearer test-gateway-token"}
+
+
+def test_health_is_public_and_does_not_disclose_configuration(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"service": "farast-ai-gateway", "status": "ok"}
+    assert "token" not in response.text.lower()
+
+
+def test_inference_requires_bearer_token(client):
+    response = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 401
+
+
+def test_transcribe_uses_quality_first_groq_model(client, monkeypatch):
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "GROQ_ASR_MODEL", "whisper-large-v3")
+
+    async def fake_groq(filename, data, mime, language):
+        assert filename == "sample.webm"
+        assert data == b"valid-audio-bytes"
+        assert language == "fa"
+        return "سلام، این یک آزمایش است."
+
+    monkeypatch.setattr(gateway, "_groq_transcribe", fake_groq)
+    response = client.post(
+        "/v1/transcribe",
+        headers=auth(),
+        data={"locale": "fa-IR"},
+        files={"audio": ("sample.webm", b"valid-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "text": "سلام، این یک آزمایش است.",
+        "engine": "groq-whisper",
+        "model": "whisper-large-v3",
+    }
+
+
+def test_transcribe_falls_back_to_render_when_groq_fails(client, monkeypatch):
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "RENDER_ASR_URL", "https://render.example/v1/transcribe")
+    monkeypatch.setattr(gateway, "RENDER_ASR_TOKEN", "render-secret")
+
+    async def broken_groq(*args):
+        raise RuntimeError("simulated provider outage")
+
+    async def fake_render(filename, data, mime, locale):
+        assert locale == "fa-IR"
+        return "متن از مسیر پشتیبان"
+
+    monkeypatch.setattr(gateway, "_groq_transcribe", broken_groq)
+    monkeypatch.setattr(gateway, "_render_transcribe", fake_render)
+    response = client.post(
+        "/v1/transcribe",
+        headers=auth(),
+        data={"locale": "fa-IR"},
+        files={"audio": ("sample.webm", b"valid-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert response.json()["engine"] == "render-fallback"
+    assert response.json()["text"] == "متن از مسیر پشتیبان"
+
+
+def test_synthesize_prefers_edge_tts_and_returns_mp3(client, monkeypatch):
+    async def fake_edge(text):
+        assert text == "سلام فراست"
+        return b"fake-mp3-data"
+
+    monkeypatch.setattr(gateway, "_edge_synthesize", fake_edge)
+    response = client.post(
+        "/v1/synthesize",
+        headers=auth(),
+        json={"text": "سلام فراست", "language": "fa-IR", "voice_id": "farast-fa-male-v1"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.headers["x-farast-voice-engine"] == "edge-tts"
+    assert response.content == b"fake-mp3-data"
+
+
+def test_synthesize_falls_back_to_render_when_edge_tts_fails(client, monkeypatch):
+    monkeypatch.setattr(gateway, "RENDER_TTS_URL", "https://render.example/v1/synthesize")
+    monkeypatch.setattr(gateway, "RENDER_TTS_TOKEN", "render-secret")
+
+    async def broken_edge(text):
+        raise RuntimeError("simulated Edge TTS outage")
+
+    async def fake_render(text, language):
+        return b"render-mp3-data"
+
+    monkeypatch.setattr(gateway, "_edge_synthesize", broken_edge)
+    monkeypatch.setattr(gateway, "_render_synthesize", fake_render)
+    response = client.post(
+        "/v1/synthesize",
+        headers=auth(),
+        json={"text": "سلام فراست", "language": "fa-IR", "voice_id": "farast-fa-male-v1"},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-voice-engine"] == "render-fallback"
+    assert response.content == b"render-mp3-data"
+
+
+def test_chat_completions_falls_back_from_gemini_to_groq(client, monkeypatch):
+    monkeypatch.setattr(gateway, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "gemini")
+    calls = []
+
+    async def fake_provider(provider, model, payload):
+        calls.append((provider, model))
+        if provider == "gemini":
+            return 503, b'{"error":"temporary"}', "application/json"
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ پشتیبان"}}]}).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-ai-provider"] == "groq"
+    assert response.json()["choices"][0]["message"]["content"] == "پاسخ پشتیبان"
+    assert [call[0] for call in calls] == ["gemini", "groq"]
