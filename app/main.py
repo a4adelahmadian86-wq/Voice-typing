@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3-turbo").strip()
+GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
 EDGE_TTS_VOICE = os.getenv("FARAST_EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 VOICE_ID = os.getenv("FARAST_VOICE_ID", "farast-fa-male-v1")
 MAX_AUDIO_BYTES = max(1024, int(os.getenv("FARAST_MAX_AUDIO_BYTES", str(15 * 1024 * 1024))))
@@ -123,16 +123,37 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
         raise HTTPException(status_code=502, detail="Could not connect to Groq speech recognition") from exc
 
 
+def looks_like_mp3(audio: bytes) -> bool:
+    # Edge TTS can fail after yielding non-audio/empty frames; don't return a
+    # non-empty response that browsers cannot actually play.
+    if len(audio) < 1024:
+        return False
+    if audio.startswith(b"ID3"):
+        return True
+    limit = min(len(audio) - 1, 4096)
+    return any(audio[i] == 0xFF and (audio[i + 1] & 0xE0) == 0xE0 for i in range(limit))
+
+
 async def synthesize_mp3(text: str) -> bytes:
-    communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
-    chunks: list[bytes] = []
-    async for chunk in communicate.stream():
-        if chunk.get("type") == "audio":
-            chunks.append(chunk["data"])
-    audio = b"".join(chunks)
-    if not audio:
-        raise RuntimeError("TTS provider returned empty audio")
-    return audio
+    last_error: Optional[Exception] = None
+    # One short retry handles transient websocket/endpoint failures without
+    # adding long waits to voice conversations. The configured voice stays fixed.
+    for attempt in range(2):
+        try:
+            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
+            chunks: list[bytes] = []
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    chunks.append(chunk["data"])
+            audio = b"".join(chunks)
+            if not looks_like_mp3(audio):
+                raise RuntimeError("TTS provider returned an invalid or empty MP3 payload")
+            return audio
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                await asyncio.sleep(0.35)
+    raise RuntimeError("Edge TTS failed after one retry") from last_error
 
 
 @app.post("/v1/synthesize", dependencies=[Depends(authorize)])
