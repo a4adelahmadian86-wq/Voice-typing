@@ -7,7 +7,7 @@ This service runs a quantized Qwen3 1.7B model using the official `llama.cpp` se
 - Model: `ggml-org/Qwen3-1.7B-GGUF:Q4_K_M`
 - Weight download: about 1.28 GB.
 - License: Apache-2.0 on the published model card.
-- Resource limits: one inference slot, one CPU thread, 2,048-token context. This intentionally favors keeping the service alive over parallel throughput.
+- Resource limits: one inference slot, one CPU thread, 2,048-token context and a 160-token output cap. Qwen3 thinking mode is disabled to avoid slow hidden reasoning. This intentionally favors keeping the service alive over parallel throughput.
 - Expected limitation: 1.5 CPU cores are slow for generation, and a 1.7B model can make mistakes on complex instructions, long documents, tool use, or nuanced Persian. It must not be treated as the sole source of truth for billing, permissions, account actions, or other deterministic business logic.
 
 The model weights are downloaded by `llama.cpp` when the container starts and cached in the service filesystem. The weights are not committed to GitHub. If Runflare deletes the service at the three-month expiry, the new service downloads the model again.
