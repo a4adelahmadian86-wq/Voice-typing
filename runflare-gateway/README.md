@@ -20,7 +20,7 @@ All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep
 
 ## Resource design
 
-- Qwen3-1.7B Q4_K_M weights are about 1.28 GB. The model service uses one CPU thread, one concurrent slot, a 2,048-token context and at most 256 output tokens to reduce memory pressure.
+- Qwen3-1.7B Q4_K_M weights are about 1.28 GB. The model service uses one CPU thread, one concurrent slot, a 2,048-token context and at most 160 output tokens to reduce memory pressure.
 - Runflare's free plan currently lists 3 GB RAM, 1.5 CPU, 3 GB disk, Tehran cluster, two deployments, and three-month expiry. Verify the terms in the dashboard before relying on them. This is a constrained hobby/test setup, not guaranteed production hosting.
 - The LLM service downloads model weights at startup and caches them in the service filesystem. The weights are not stored in GitHub. If the service is deleted after three months, the replacement downloads the model again.
 - The browser-local Whisper speech model is separate: each user's browser downloads and caches it locally. The default is `Xenova/whisper-base`; the editor also offers `Xenova/whisper-small` for higher quality at a larger download and higher RAM/CPU use. A browser cache may be cleared or evicted, in which case it downloads again.
