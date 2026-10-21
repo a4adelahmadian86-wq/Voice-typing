@@ -22,7 +22,8 @@ try {
 
 Write-Host ""
 Write-Host "STEP 2/2: Deploy the FARAST API gateway."
-Write-Host "Before connecting production traffic, set FARAST_LOCAL_LLM_URL and FARAST_LOCAL_LLM_API_KEY in the gateway service settings."
+Write-Host "Before connecting traffic, set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, and FARAST_GATEWAY_TOKEN in the gateway service settings."
+Write-Host "For the optional local fallback, also set FARAST_LOCAL_LLM_URL and FARAST_LOCAL_LLM_API_KEY."
 Push-Location (Join-Path $root "runflare-gateway")
 try {
     runflare reset
