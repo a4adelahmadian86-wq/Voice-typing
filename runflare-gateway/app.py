@@ -243,47 +243,20 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
 
 
 async def _chat_provider_request(provider: str, model: str, payload: dict) -> tuple[int, bytes, str]:
-    if provider == "local":
+    if provider == "cloudflare":
+        if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
+            raise RuntimeError("Cloudflare Workers AI is not configured")
+        key = CLOUDFLARE_API_TOKEN
+        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"
+    else:
+        if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+            raise RuntimeError("Local LLM is not configured")
         key = LOCAL_LLM_API_KEY
-        if not LOCAL_LLM_URL:
-            raise RuntimeError("Local LLM URL is not configured")
         url = LOCAL_LLM_URL
         if not url.endswith("/v1/chat/completions"):
             url += "/v1/chat/completions"
-    elif provider == "colab":
-        key = COLAB_LLM_API_KEY
-        if not COLAB_LLM_URL:
-            raise RuntimeError("Colab LLM URL is not configured")
-        url = COLAB_LLM_URL if COLAB_LLM_URL.endswith("/v1/chat/completions") else COLAB_LLM_URL + "/v1/chat/completions"
-    elif provider == "gemini":
-        key = GEMINI_API_KEY
-        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    else:
-        key = GROQ_API_KEY
-        url = "https://api.groq.com/openai/v1/chat/completions"
-    if not key:
-        raise RuntimeError(f"{provider} is not configured")
     body = _prepare_local_payload(payload, model) if provider == "local" else dict(payload)
     body["model"] = model
-    if provider == "gemini":
-        # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
-        body.pop("temperature", None)
-        body.pop("top_p", None)
-        body.pop("top_k", None)
-    if provider == "groq":
-        output_format = body.get("response_format")
-        if isinstance(output_format, dict) and output_format.get("type") == "json_schema":
-            schema = (output_format.get("json_schema") or {}).get("schema")
-            messages = body.get("messages")
-            if schema and isinstance(messages, list):
-                schema_hint = "Return only valid JSON matching this schema: " + json.dumps(schema, ensure_ascii=False)
-                system_message = next((item for item in messages if isinstance(item, dict) and item.get("role") == "system"), None)
-                if system_message is not None:
-                    system_message["content"] = str(system_message.get("content", "")) + "\n\n" + schema_hint
-                else:
-                    messages.insert(0, {"role": "system", "content": schema_hint})
-            # Groq JSON mode is the portable fallback; Laravel validates the returned shape.
-            body["response_format"] = {"type": "json_object"}
     async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
         response = await client.post(
             url,
@@ -293,82 +266,81 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
     return response.status_code, response.content, response.headers.get("content-type", "application/json")
 
 
+def _chat_providers(requested_model: str) -> list[tuple[str, str]]:
+    heavy_requested = requested_model in {"farast-heavy", "colab-heavy"}
+    providers: list[tuple[str, str]] = []
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+        model = CLOUDFLARE_HEAVY_MODEL if heavy_requested else CLOUDFLARE_LLM_MODEL
+        providers.append(("cloudflare", model))
+    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+        providers.append(("local", LOCAL_LLM_MODEL))
+    return providers
+
+
 async def _stream_chat_completions(payload: dict) -> StreamingResponse:
-    # Try the local llama.cpp server as a true token stream first.
-    requested_model_for_stream = str(payload.get("model") or "").strip()
-    heavy_requested = requested_model_for_stream in {"farast-heavy", "colab-heavy"}
-    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY and not heavy_requested:
+    requested_model = str(payload.get("model") or "").strip()
+    providers = _chat_providers(requested_model)
+    for provider, model in providers:
         client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
         upstream = None
         try:
-            url = LOCAL_LLM_URL if LOCAL_LLM_URL.endswith("/v1/chat/completions") else LOCAL_LLM_URL + "/v1/chat/completions"
-            body = _prepare_local_payload(payload, LOCAL_LLM_MODEL)
+            if provider == "cloudflare":
+                url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"
+                key = CLOUDFLARE_API_TOKEN
+                body = dict(payload)
+            else:
+                url = LOCAL_LLM_URL if LOCAL_LLM_URL.endswith("/v1/chat/completions") else LOCAL_LLM_URL + "/v1/chat/completions"
+                key = LOCAL_LLM_API_KEY
+                body = _prepare_local_payload(payload, model)
+            body["model"] = model
             body["stream"] = True
             request = client.build_request(
                 "POST", url,
-                headers={"Authorization": f"Bearer {LOCAL_LLM_API_KEY}", "Content-Type": "application/json", "Accept": "text/event-stream"},
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "text/event-stream"},
                 json=body,
             )
             upstream = await client.send(request, stream=True)
             if upstream.is_success:
-                async def relay():
+                async def relay(response=upstream, http_client=client):
                     try:
-                        async for chunk in upstream.aiter_raw():
+                        async for chunk in response.aiter_raw():
                             if chunk:
                                 yield chunk
                     finally:
-                        await upstream.aclose()
-                        await client.aclose()
+                        await response.aclose()
+                        await http_client.aclose()
                 return StreamingResponse(
                     relay(), media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": "local"},
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": provider},
                 )
             await upstream.aread()
-            await upstream.aclose()
         except Exception:
-            if upstream is not None:
-                try: await upstream.aclose()
-                except Exception: pass
+            pass
         finally:
-            # The streaming response owns the client after success; on errors close it here.
             if upstream is None or not upstream.is_success:
+                if upstream is not None:
+                    try:
+                        await upstream.aclose()
+                    except Exception:
+                        pass
                 await client.aclose()
 
-    # If local streaming is unavailable, wrap the first working provider's complete response
-    # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
-    requested_model = str(payload.get("model") or "").strip()
-    if requested_model in {"farast-heavy", "colab-heavy"} and COLAB_LLM_URL and COLAB_LLM_API_KEY:
-        primary = "colab"
-    else:
-        primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq", "colab"} else "local"
-    order = [primary] + [provider for provider in ("colab", "local", "gemini", "groq") if provider != primary]
     fallback_payload = dict(payload)
     fallback_payload["stream"] = False
-    for provider in order:
-        if provider == "local":
-            if not heavy_requested or not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
-                continue
-            model = LOCAL_LLM_MODEL
-        elif provider == "colab":
-            if not (COLAB_LLM_URL and COLAB_LLM_API_KEY): continue
-            model = COLAB_LLM_MODEL
-        elif provider == "gemini":
-            if not GEMINI_API_KEY: continue
-            model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
-        else:
-            if not GROQ_API_KEY: continue
-            model = GROQ_CHAT_MODEL
+    for provider, model in providers:
         try:
-            code, raw, content_type = await _chat_provider_request(provider, model, fallback_payload)
-            if not 200 <= code < 300: continue
+            code, raw, _ = await _chat_provider_request(provider, model, fallback_payload)
+            if not 200 <= code < 300:
+                continue
             data = json.loads(raw.decode("utf-8"))
             answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not isinstance(answer, str) or not answer.strip(): continue
+            if not isinstance(answer, str) or not answer.strip():
+                continue
             async def one_shot_sse(text: str):
                 for offset in range(0, len(text), 24):
                     frame = {"choices": [{"index": 0, "delta": {"content": text[offset:offset + 24]}}]}
-                    yield ("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n").encode("utf-8")
-                yield b"data: [DONE]\n\n"
+                    yield ("data: " + json.dumps(frame, ensure_ascii=False) + "\\n\\n").encode("utf-8")
+                yield b"data: [DONE]\\n\\n"
             return StreamingResponse(
                 one_shot_sse(answer), media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": provider},
@@ -387,29 +359,9 @@ async def chat_completions(payload: dict) -> Response:
         return await _stream_chat_completions(payload)
 
     requested_model = str(payload.get("model") or "").strip()
-    if requested_model in {"farast-heavy", "colab-heavy"} and COLAB_LLM_URL and COLAB_LLM_API_KEY:
-        primary = "colab"
-    else:
-        primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq", "colab"} else "local"
-    order = [primary] + [provider for provider in ("colab", "local", "gemini", "groq") if provider != primary]
+    providers = _chat_providers(requested_model)
     last_status = 503
-    for provider in order:
-        if provider == "local":
-            model = LOCAL_LLM_MODEL
-            if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
-                continue
-        elif provider == "colab":
-            model = COLAB_LLM_MODEL
-            if not (COLAB_LLM_URL and COLAB_LLM_API_KEY):
-                continue
-        elif provider == "gemini":
-            model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
-            if not GEMINI_API_KEY:
-                continue
-        else:
-            model = GROQ_CHAT_MODEL
-            if not GROQ_API_KEY:
-                continue
+    for provider, model in providers:
         try:
             code, body, content_type = await _chat_provider_request(provider, model, payload)
             if 200 <= code < 300:
@@ -422,5 +374,4 @@ async def chat_completions(payload: dict) -> Response:
             last_status = code
         except Exception:
             continue
-
     raise HTTPException(status_code=503 if last_status < 500 else last_status, detail="AI text generation is temporarily unavailable")
