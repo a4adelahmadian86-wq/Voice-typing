@@ -8,7 +8,7 @@ This is a lightweight, stateless API gateway for FARAST. It deliberately does **
 - \`GET /ready\`: public configuration readiness booleans (not a live upstream test).
 - \`GET /v1/status\`: authenticated readiness without returning keys.
 - \`POST /v1/transcribe\`: Bearer-authenticated multipart \`audio\` + \`locale\`; Groq Whisper Large v3 first, existing Render service as fallback.
-- \`POST /v1/synthesize\`: Bearer-authenticated JSON \`text\`, \`language\`, \`voice_id\`; Microsoft Edge TTS first, Render TTS as fallback. Returns MP3.
+- \`POST /v1/synthesize\`: Bearer-authenticated JSON \`text\`, \`language\`, \`voice_id\`; Microsoft Edge TTS first (Persian, English, Arabic), Render TTS as fallback. Returns MP3.
 - \`POST /v1/chat/completions\`: OpenAI-compatible chat request; Gemini first by default, Groq fallback. This gives FARAST one multi-purpose API contract for chat, summarization, writing, and agent text generation.
 
 All \`/v1/*\` endpoints require \`Authorization: Bearer FARAST_GATEWAY_TOKEN\`. Keep provider keys and this token in Runflare's server-side environment settings only. Never put them in browser JavaScript or Git.
