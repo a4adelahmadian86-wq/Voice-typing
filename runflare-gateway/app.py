@@ -73,12 +73,26 @@ def ready() -> dict:
     }
 
 
+@app.get("/v1/colab/status", dependencies=[Depends(authorize)])
+async def colab_status() -> dict:
+    """Check the optional Colab tunnel on demand; this does not keep a Colab session alive."""
+    if not COLAB_LLM_URL or not COLAB_LLM_API_KEY:
+        return {"configured": False, "reachable": False, "reason": "not_configured"}
+    health_url = COLAB_LLM_URL.removesuffix("/v1/chat/completions").rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(health_url)
+        return {"configured": True, "reachable": response.is_success, "status_code": response.status_code}
+    except Exception:
+        return {"configured": True, "reachable": False, "reason": "upstream_unreachable"}
+
+
 @app.get("/v1/status", dependencies=[Depends(authorize)])
 def status() -> dict:
     return {
         "asr_ready": bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN)),
         "tts_ready": True,
-        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
+        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or (COLAB_LLM_URL and COLAB_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
         "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
         "colab_llm_configured": bool(COLAB_LLM_URL and COLAB_LLM_API_KEY),
         "primary_llm": AI_PRIMARY_PROVIDER,
@@ -335,7 +349,6 @@ async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     # If local streaming is unavailable, wrap the first working provider's complete response
     # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
     requested_model = str(payload.get("model") or "").strip()
-    requested_model = str(payload.get("model") or "").strip()
     if requested_model in {"farast-heavy", "colab-heavy"} and COLAB_LLM_URL and COLAB_LLM_API_KEY:
         primary = "colab"
     else:
@@ -345,8 +358,10 @@ async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     fallback_payload["stream"] = False
     for provider in order:
         if provider == "local":
-            continue
-        if provider == "colab":
+            if not heavy_requested or not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+                continue
+            model = LOCAL_LLM_MODEL
+        elif provider == "colab":
             if not (COLAB_LLM_URL and COLAB_LLM_API_KEY): continue
             model = COLAB_LLM_MODEL
         elif provider == "gemini":
