@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import importlib.util
 import sys
@@ -228,3 +229,49 @@ def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monk
     assert response.status_code == 200
     assert response.headers["x-farast-ai-provider"] == "groq"
     assert calls == ["local", "groq"]
+
+
+def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{"ok":true}'
+        headers = {"content-type": "application/json"}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["body"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", FakeClient)
+    original_messages = [{"role": "system", "content": "S" * 5000}] + [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": ("متن " + str(i) + " ") * 500}
+        for i in range(7)
+    ]
+    payload = {"messages": original_messages, "max_tokens": 700, "temperature": 0.2}
+    code, body, content_type = asyncio.run(gateway._chat_provider_request("local", "Qwen3-1.7B-Q4_K_M", payload))
+
+    assert code == 200
+    assert content_type == "application/json"
+    assert captured["url"] == "https://local-llm.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer local-test-key"
+    assert captured["body"]["max_tokens"] == 160
+    assert len(captured["body"]["messages"]) <= 6
+    assert len(captured["body"]["messages"][0]["content"]) <= 2200
+    assert captured["body"]["messages"][-1]["content"].endswith("/no_think")
+    assert len(payload["messages"]) == len(original_messages)
+    assert json.loads(body) == {"ok": True}
