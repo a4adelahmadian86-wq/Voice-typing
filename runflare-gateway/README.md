@@ -21,6 +21,7 @@ All \`/v1/*\` endpoints require \`Authorization: Bearer FARAST_GATEWAY_TOKEN\`. 
 - TTS fallback order: Edge TTS -> Render TTS (if URL and token are configured).
 - LLM fallback order: Gemini (default primary) -> Groq, or the reverse if \`AI_PRIMARY_PROVIDER=groq\`.
 - A provider's free quota, rate limit, region access, terms, and availability still apply. The gateway cannot guarantee that an upstream provider is free or reachable.
+- Privacy warning: the Gemini API free tier states that submitted content may be used to improve Google's products. Do not route confidential documents through a free-tier provider unless that use is acceptable under the site's privacy policy and the user's selected processing mode. Review current provider terms before production; a paid tier has different data-use terms.
 - Runflare's free service is documented as non-production, with no backup guarantee, and is deleted after three months. Do not store user data, database state, or secrets on its disk.
 
 ## Deploy
