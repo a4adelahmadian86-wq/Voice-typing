@@ -21,6 +21,10 @@ def client(monkeypatch):
     monkeypatch.setattr(gateway, "API_TOKEN", "test-gateway-token")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "")
     monkeypatch.setattr(gateway, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
     monkeypatch.setattr(gateway, "RENDER_ASR_URL", "")
     monkeypatch.setattr(gateway, "RENDER_ASR_TOKEN", "")
     monkeypatch.setattr(gateway, "RENDER_TTS_URL", "")
@@ -175,3 +179,52 @@ def test_chat_completions_falls_back_from_gemini_to_groq(client, monkeypatch):
     assert response.headers["x-farast-ai-provider"] == "groq"
     assert response.json()["choices"][0]["message"]["content"] == "پاسخ پشتیبان"
     assert [call[0] for call in calls] == ["gemini", "groq"]
+
+
+def test_chat_completions_uses_local_llm_as_primary(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
+    calls = []
+
+    async def fake_provider(provider, model, payload):
+        calls.append((provider, model))
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ محلی"}}]}).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-ai-provider"] == "local"
+    assert response.json()["choices"][0]["message"]["content"] == "پاسخ محلی"
+    assert calls == [("local", "Qwen3-1.7B-Q4_K_M")]
+
+
+def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
+    monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
+    calls = []
+
+    async def fake_provider(provider, model, payload):
+        calls.append(provider)
+        if provider == "local":
+            return 503, b'{"error":"model loading"}', "application/json"
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ پشتیبان"}}]}).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-ai-provider"] == "groq"
+    assert calls == ["local", "groq"]
