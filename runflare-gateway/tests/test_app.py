@@ -275,3 +275,51 @@ def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
     assert captured["body"]["messages"][-1]["content"].endswith("/no_think")
     assert len(payload["messages"]) == len(original_messages)
     assert json.loads(body) == {"ok": True}
+
+def test_chat_completions_streams_local_llm_sse(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
+    captured = {}
+
+    class FakeUpstream:
+        is_success = True
+
+        async def aiter_raw(self):
+            yield b'data: {"choices":[{"index":0,"delta":{"content":"\xd8\xb3\xd9\x84\xd8\xa7\xd9\x85"}}]}\\n\\n'
+            yield b'data: [DONE]\\n\\n'
+
+        async def aclose(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def build_request(self, method, url, headers, json):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["body"] = json
+            return {"url": url, "headers": headers, "json": json}
+
+        async def send(self, request, stream=False):
+            assert stream is True
+            return FakeUpstream()
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", FakeClient)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "stream": True, "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-farast-ai-provider"] == "local"
+    assert captured["url"] == "https://local-llm.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer local-test-key"
+    assert captured["body"]["stream"] is True
+    assert captured["body"]["max_tokens"] == 160
+    assert "[DONE]" in response.text
