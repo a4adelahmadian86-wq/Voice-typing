@@ -95,8 +95,9 @@ def test_transcribe_falls_back_to_render_when_groq_fails(client, monkeypatch):
 
 
 def test_synthesize_prefers_edge_tts_and_returns_mp3(client, monkeypatch):
-    async def fake_edge(text):
+    async def fake_edge(text, language):
         assert text == "سلام فراست"
+        assert language == "fa-IR"
         return b"fake-mp3-data"
 
     monkeypatch.setattr(gateway, "_edge_synthesize", fake_edge)
@@ -115,7 +116,7 @@ def test_synthesize_falls_back_to_render_when_edge_tts_fails(client, monkeypatch
     monkeypatch.setattr(gateway, "RENDER_TTS_URL", "https://render.example/v1/synthesize")
     monkeypatch.setattr(gateway, "RENDER_TTS_TOKEN", "render-secret")
 
-    async def broken_edge(text):
+    async def broken_edge(text, language):
         raise RuntimeError("simulated Edge TTS outage")
 
     async def fake_render(text, language):
