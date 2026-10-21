@@ -326,11 +326,35 @@ def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
     assert json.loads(body) == {"ok": True}
 
 
-def test_streaming_wraps_provider_response_as_sse(client, monkeypatch):
+def test_streaming_falls_back_to_complete_cloudflare_response_as_sse(client, monkeypatch):
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(gateway, "CLOUDFLARE_ACCOUNT_ID", "account-id")
     monkeypatch.setattr(gateway, "CLOUDFLARE_API_TOKEN", "secret-token")
+
+    class FailedUpstream:
+        is_success = False
+
+        async def aread(self):
+            return b'{"error":"stream unavailable"}'
+
+        async def aclose(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def build_request(self, method, url, headers, json):
+            return {"method": method, "url": url, "headers": headers, "json": json}
+
+        async def send(self, request, stream=False):
+            assert stream is True
+            assert request["url"].endswith("/ai/v1/chat/completions")
+            return FailedUpstream()
+
+        async def aclose(self):
+            return None
 
     async def fake_provider(provider, model, payload):
         assert provider == "cloudflare"
@@ -338,6 +362,7 @@ def test_streaming_wraps_provider_response_as_sse(client, monkeypatch):
         body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ پشتیبان"}}]}, ensure_ascii=False).encode()
         return 200, body, "application/json"
 
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
     response = client.post(
         "/v1/chat/completions",
