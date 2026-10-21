@@ -36,16 +36,18 @@ All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep
 
 ## First deployment
 
-1. Create two Docker services in Runflare: one with build/deploy root `runflare-llm`, another with root `runflare-gateway`. The free hosting page lists two deployments, but verify current availability in the account.
-2. In the model service, set `LLAMA_API_KEY` to a long random secret. Deploy `runflare-llm`. Wait until the model service `GET /health` returns HTTP 200; the first start downloads around 1.28 GB and can take several minutes.
-3. Copy the model service HTTPS URL. In the gateway service environment, set `FARAST_LOCAL_LLM_URL` to that URL, `FARAST_LOCAL_LLM_API_KEY` to the same secret as `LLAMA_API_KEY`, and `FARAST_LOCAL_LLM_MODEL=Qwen3-1.7B-Q4_K_M`.
-4. Create a Cloudflare account and an account-scoped API token with Workers AI permissions. Enter `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in the gateway's server-side environment. Do not commit the token.
-5. Set a unique `FARAST_GATEWAY_TOKEN`. Leave Render ASR/TTS blank unless you have deployed and tested that service and explicitly accepted its cost; the sample environment does not point to an assumed-live Render URL.
-6. Deploy the gateway and verify `/health`, `/ready`, and authenticated `/v1/status`. Then make a real authenticated chat request and transcribe a real Persian recording. Contract tests alone do not establish live provider availability or Persian accuracy.
-7. In Laravel's server environment set `FARAST_AI_GATEWAY_URL` to the gateway's HTTPS base URL and `FARAST_AI_GATEWAY_TOKEN` to the exact same `FARAST_GATEWAY_TOKEN`. Then test the public site's assistant and voice routes end to end.
+1. Create the **gateway** Docker service in Runflare with build/deploy root `runflare-gateway`. The gateway is the first service to deploy because Cloudflare Workers AI is the primary inference provider.
+2. In the gateway service environment, set `FARAST_GATEWAY_TOKEN` to a long random secret, plus `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The Cloudflare token must have Workers AI Read/Write permissions. Do not commit these secrets.
+3. Deploy the gateway. Verify `/health` returns HTTP 200, `/ready` reports configured readiness, and authenticated `/v1/status` shows Cloudflare configured. Then send a real authenticated `/v1/chat/completions` request and transcribe a real Persian recording through `/v1/transcribe`.
+4. Optionally create a second Docker service for the local fallback with build root `runflare-llm`. Add `LLAMA_API_KEY` as a long random secret and deploy. The first start downloads roughly 1.28 GB from Hugging Face and may fail if outbound access or free resources are unavailable.
+5. Once the local model `GET /health` returns HTTP 200, set in the gateway environment:
+   - `FARAST_LOCAL_LLM_URL=https://YOUR-LLM-SERVICE-DOMAIN`
+   - `FARAST_LOCAL_LLM_API_KEY` to the exact same secret as `LLAMA_API_KEY`
+   - `FARAST_LOCAL_LLM_MODEL=Qwen3-1.7B-Q4_K_M`
+6. In Laravel's server environment set `FARAST_AI_GATEWAY_URL` to the gateway's HTTPS base URL and `FARAST_AI_GATEWAY_TOKEN` to the exact same secret as `FARAST_GATEWAY_TOKEN`. Clear Laravel's cached configuration, then test `/editor/voice/status`, `/assistant/voice/status`, `/assistant/transcribe`, `/assistant/speak`, and `/assistant/chat` against the live deployment.
+7. Configure Render ASR/TTS only if you have deployed and tested that service and explicitly accepted its cost. The sample environment intentionally leaves those URLs blank.
 
-The repository root includes `deploy-runflare-stack.ps1` to deploy the two Runflare services. Account creation, dashboard service setup, Cloudflare token creation and secret entry still require the account owner; this repository change cannot perform those account-side actions.
-
+The repository root includes `deploy-runflare-stack.ps1` to deploy the gateway first and the optional local model fallback second. Pass `-SkipLocalFallback` to deploy only the gateway. Account creation, dashboard service setup, Cloudflare token creation and secret entry still require the account owner; this repository change cannot perform those account-side actions.
 ## Local tests
 
 ```sh
