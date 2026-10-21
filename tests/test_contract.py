@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 os.environ.setdefault("FARAST_VOICE_TOKEN", "test-token-for-contract-tests")
@@ -85,3 +86,29 @@ def test_synthesize_returns_error_when_provider_returns_no_audio(monkeypatch):
     )
     assert response.status_code == 502
     assert response.json()["detail"] == "Persian speech synthesis provider is unavailable"
+
+
+def test_synthesize_mp3_retries_invalid_provider_audio(monkeypatch):
+    calls = {"count": 0}
+
+    class FakeCommunicate:
+        def __init__(self, text, voice):
+            assert text == "سلام"
+            assert voice == main.EDGE_TTS_VOICE
+
+        async def stream(self):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                yield {"type": "audio", "data": b"\x00" * 2048}
+                return
+            yield {"type": "audio", "data": b"ID3" + (b"\x00" * 2048)}
+
+    monkeypatch.setattr(main.edge_tts, "Communicate", FakeCommunicate)
+    audio = asyncio.run(main.synthesize_mp3("سلام"))
+    assert calls["count"] == 2
+    assert audio.startswith(b"ID3")
+    assert main.looks_like_mp3(audio)
+
+
+def test_looks_like_mp3_rejects_non_audio_payload():
+    assert main.looks_like_mp3(b"\x00" * 4096) is False
