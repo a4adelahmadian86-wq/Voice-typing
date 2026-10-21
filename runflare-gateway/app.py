@@ -208,6 +208,11 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
         raise RuntimeError(f"{provider} is not configured")
     body = dict(payload)
     body["model"] = model
+    if provider == "gemini":
+        # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
+        body.pop("temperature", None)
+        body.pop("top_p", None)
+        body.pop("top_k", None)
     if provider == "groq":
         output_format = body.get("response_format")
         if isinstance(output_format, dict) and output_format.get("type") == "json_schema":
