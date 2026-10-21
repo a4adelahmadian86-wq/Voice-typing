@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets
@@ -12,18 +13,14 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST AI Gateway"
 API_TOKEN = os.getenv("FARAST_GATEWAY_TOKEN", "").strip()
-GROQ_API_KEY = ""  # Disabled by product policy; do not route requests to Groq.
-GEMINI_API_KEY = ""  # Disabled by product policy; do not route requests to Gemini.
-GROQ_ASR_MODEL = "whisper-large-v3"
-GROQ_CHAT_MODEL = "openai/gpt-oss-20b"
-GEMINI_MODEL = "gemini-3.8-flash"
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
+CLOUDFLARE_LLM_MODEL = os.getenv("FARAST_CLOUDFLARE_LLM_MODEL", "@cf/qwen/qwen3-30b-a3b-fp8").strip()
+CLOUDFLARE_HEAVY_MODEL = os.getenv("FARAST_CLOUDFLARE_HEAVY_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast").strip()
+CLOUDFLARE_ASR_MODEL = os.getenv("FARAST_CLOUDFLARE_ASR_MODEL", "@cf/openai/whisper-large-v3-turbo").strip()
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
-COLAB_LLM_URL = os.getenv("FARAST_COLAB_LLM_URL", "").strip().rstrip("/")
-COLAB_LLM_API_KEY = os.getenv("FARAST_COLAB_LLM_API_KEY", "").strip()
-COLAB_LLM_MODEL = os.getenv("FARAST_COLAB_LLM_MODEL", "farast-heavy").strip()
-AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "local").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
 EDGE_TTS_AR_VOICE = os.getenv("EDGE_TTS_AR_VOICE", "ar-SA-HamedNeural").strip()
@@ -62,43 +59,56 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> dict:
-    asr_ready = bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN))
-    tts_ready = True
-    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or (COLAB_LLM_URL and COLAB_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
+    cloudflare_configured = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
+    asr_configured = cloudflare_configured or bool(RENDER_ASR_URL and RENDER_ASR_TOKEN)
+    llm_configured = cloudflare_configured or bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
     return {
-        "status": "ready" if asr_ready and tts_ready and llm_ready else "degraded",
-        "asr_ready": asr_ready,
-        "tts_ready": tts_ready,
-        "llm_ready": llm_ready,
+        "status": "ready" if asr_configured and llm_configured else "degraded",
+        "asr_configured": asr_configured,
+        "tts_configured": True,
+        "llm_configured": llm_configured,
+        "note": "Configuration readiness only; upstream inference is checked by a real request.",
     }
-
-
-@app.get("/v1/colab/status", dependencies=[Depends(authorize)])
-async def colab_status() -> dict:
-    """Check the optional Colab tunnel on demand; this does not keep a Colab session alive."""
-    if not COLAB_LLM_URL or not COLAB_LLM_API_KEY:
-        return {"configured": False, "reachable": False, "reason": "not_configured"}
-    health_url = COLAB_LLM_URL.removesuffix("/v1/chat/completions").rstrip("/") + "/health"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(health_url)
-        return {"configured": True, "reachable": response.is_success, "status_code": response.status_code}
-    except Exception:
-        return {"configured": True, "reachable": False, "reason": "upstream_unreachable"}
 
 
 @app.get("/v1/status", dependencies=[Depends(authorize)])
 def status() -> dict:
+    cloudflare_configured = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
     return {
-        "asr_ready": bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN)),
-        "tts_ready": True,
-        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or (COLAB_LLM_URL and COLAB_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
-        "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
-        "colab_llm_configured": bool(COLAB_LLM_URL and COLAB_LLM_API_KEY),
-        "primary_llm": AI_PRIMARY_PROVIDER,
-        "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
+        "asr_configured": cloudflare_configured or bool(RENDER_ASR_URL and RENDER_ASR_TOKEN),
+        "tts_configured": True,
+        "llm_configured": cloudflare_configured or bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "cloudflare_configured": cloudflare_configured,
+        "cloudflare_llm_model": CLOUDFLARE_LLM_MODEL if cloudflare_configured else None,
+        "cloudflare_heavy_model": CLOUDFLARE_HEAVY_MODEL if cloudflare_configured else None,
+        "local_llm_configured": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "asr_model": CLOUDFLARE_ASR_MODEL if cloudflare_configured else ("render-fallback" if RENDER_ASR_URL and RENDER_ASR_TOKEN else None),
         "tts_engine": "edge-tts-with-render-fallback",
     }
+
+
+async def _cloudflare_transcribe(filename: str, data: bytes, mime: str, locale: str) -> str:
+    if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
+        raise RuntimeError("Cloudflare Workers AI is not configured")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_ASR_MODEL}"
+    payload = {
+        "audio": base64.b64encode(data).decode("ascii"),
+        "task": "transcribe",
+        "language": LOCALE_TO_LANGUAGE[locale],
+    }
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    if not response.is_success:
+        raise RuntimeError(f"Cloudflare ASR returned HTTP {response.status_code}")
+    result = response.json().get("result", {})
+    transcript = str(result.get("text", response.json().get("text", ""))).strip()
+    if not transcript:
+        raise RuntimeError("Cloudflare ASR returned empty text")
+    return transcript
 
 
 async def _groq_transcribe(filename: str, data: bytes, mime: str, language: str) -> str:
