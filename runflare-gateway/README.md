@@ -14,7 +14,7 @@ The local Qwen model is a modest general-text engine, not ChatGPT-class. It may 
 - `GET /v1/status`: authenticated readiness without returning keys.
 - `POST /v1/transcribe`: Bearer-authenticated multipart `audio` + `locale`; Groq Whisper Large v3 first, Render ASR fallback.
 - `POST /v1/synthesize`: Bearer-authenticated JSON `text`, `language`, `voice_id`; Microsoft Edge TTS first (Persian, English, Arabic), Render TTS fallback. Returns MP3.
-- `POST /v1/chat/completions`: OpenAI-compatible chat request; local Qwen first by default, then configured Gemini/Groq fallbacks.
+- `POST /v1/chat/completions`: OpenAI-compatible chat request; local Qwen first by default, then configured Gemini/Groq fallbacks. With `stream: true`, the local Qwen route returns real SSE token chunks; if local streaming is unavailable, a configured cloud provider is wrapped in SSE after its full response arrives.
 
 All `/v1/*` endpoints require `Authorization: Bearer FARAST_GATEWAY_TOKEN`. Keep provider keys and gateway/model-service tokens in server-side environment settings only. Never put them in browser JavaScript or Git.
 
