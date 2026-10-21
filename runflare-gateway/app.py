@@ -241,7 +241,7 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
                     limit = 2200 if item.get("role") == "system" else 1000
                     item["content"] = content[:limit]
             if body["messages"] and body["messages"][-1].get("role") == "user":
-                body["messages"][-1]["content"] = str(body["messages"][-1].get("content", "")) + "\\n/no_think"
+                body["messages"][-1]["content"] = str(body["messages"][-1].get("content", "")) + "\n/no_think"
     if provider == "gemini":
         # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
         body.pop("temperature", None)
