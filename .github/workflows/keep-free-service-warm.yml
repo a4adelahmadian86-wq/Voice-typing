@@ -1,0 +1,24 @@
+name: Keep free voice service warm (best effort)
+
+on:
+  schedule:
+    - cron: '*/14 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check configured health URL
+        env:
+          VOICE_HEALTH_URL: ${{ vars.VOICE_HEALTH_URL }}
+        run: |
+          if [ -z "$VOICE_HEALTH_URL" ]; then
+            echo "Set repository variable VOICE_HEALTH_URL to the deployed /health URL; skipping."
+            exit 0
+          fi
+          case "$VOICE_HEALTH_URL" in
+            https://*) ;;
+            *) echo "VOICE_HEALTH_URL must use HTTPS"; exit 1 ;;
+          esac
+          curl --fail --silent --show-error --max-time 25 "$VOICE_HEALTH_URL"
