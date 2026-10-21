@@ -285,8 +285,8 @@ def test_chat_completions_streams_local_llm_sse(client, monkeypatch):
         is_success = True
 
         async def aiter_raw(self):
-            yield b'data: {"choices":[{"index":0,"delta":{"content":"\xd8\xb3\xd9\x84\xd8\xa7\xd9\x85"}}]}\\n\\n'
-            yield b'data: [DONE]\\n\\n'
+            yield b'data: {"choices":[{"index":0,"delta":{"content":"\xd8\xb3\xd9\x84\xd8\xa7\xd9\x85"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
 
         async def aclose(self):
             return None
