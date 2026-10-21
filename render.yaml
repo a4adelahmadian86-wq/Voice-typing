@@ -15,7 +15,7 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_ASR_MODEL
-        value: whisper-large-v3-turbo
+        value: whisper-large-v3
       - key: FARAST_EDGE_TTS_VOICE
         value: fa-IR-FaridNeural
       - key: FARAST_VOICE_ID
