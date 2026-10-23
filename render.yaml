@@ -24,3 +24,9 @@ services:
         value: "15728640"
       - key: FARAST_MAX_TEXT_CHARS
         value: "1200"
+      - key: FARAST_APP_URL
+        sync: false
+      - key: FARAST_VOICE_GATEWAY_SECRET
+        sync: false
+      - key: FARAST_LIVE_CHUNK_SECONDS
+        value: "3"
