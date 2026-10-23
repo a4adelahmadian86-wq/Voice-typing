@@ -21,6 +21,13 @@ This branch replaces the large local Whisper and Coqui models with a lightweight
 4. Deploy and verify /health, then /ready.
 5. Verify Persian audio using POST /v1/synthesize and a short Persian recording using POST /v1/transcribe before changing the live Laravel settings.
 
+## Live WebSocket speech stream (experimental)
+
+- `wss://YOUR-SERVICE.onrender.com/v1/stream` accepts a JSON start frame (`type=start`, short-lived Laravel `token`, and `locale`) followed by binary mono PCM16 little-endian audio at 16 kHz. It transcribes disjoint short WAV chunks through the configured Groq Whisper model and sends `ready`, `final`, `provider_error`, or `error` JSON events.
+- Set `FARAST_APP_URL` to the canonical HTTPS origin of the Laravel site and set `FARAST_VOICE_GATEWAY_SECRET` to the same random secret configured as `services.voice_stream.gateway_secret` in Laravel. These must be secrets in the hosting dashboard, not committed values. The gateway validates each session token against Laravel's signed `/editor/voice/stream-config` endpoint before processing audio.
+- Set Laravel `services.voice_stream.url` to the service origin (no `/v1/stream` suffix) and configure `services.voice_stream.gateway_secret` with the same secret. The browser app appends `/v1/stream` automatically.
+- The stream currently uses chunked Whisper requests, not a native token-by-token streaming ASR model. It is an experimental live transport, and real-device latency, pause detection, and end-to-end voice turns must be validated before describing it as production-ready.
+
 ## API contract
 
 - GET /health: basic public health; never returns secrets.
