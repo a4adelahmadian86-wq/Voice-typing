@@ -112,3 +112,14 @@ def test_synthesize_mp3_retries_invalid_provider_audio(monkeypatch):
 
 def test_looks_like_mp3_rejects_non_audio_payload():
     assert main.looks_like_mp3(b"\x00" * 4096) is False
+
+
+def test_live_stream_rejects_unconfigured_gateway(monkeypatch):
+    monkeypatch.setenv("FARAST_APP_URL", "")
+    monkeypatch.setenv("FARAST_VOICE_GATEWAY_SECRET", "")
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/v1/stream?v=1") as websocket:
+            websocket.send_json({"type": "start", "token": "not-a-valid-token", "locale": "fa-IR"})
+            message = websocket.receive_json()
+            assert message["type"] == "error"
+            assert message["message"] == "live_stream_not_configured"
