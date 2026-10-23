@@ -2,7 +2,7 @@ name: voice-service-tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, free-groq-edge-tts]
   pull_request:
 
 jobs:
