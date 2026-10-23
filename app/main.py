@@ -184,7 +184,7 @@ async def synthesize(request: SynthesizeRequest) -> Response:
 @app.websocket("/v1/stream")
 async def live_stream(websocket: WebSocket):
     """Authenticated live PCM stream; audio is transcribed in short disjoint WAV chunks."""
-    import hashlib, hmac, io, json, wave
+    import hashlib, hmac, io, json, wave, struct
     await websocket.accept()
     try:
         start = await asyncio.wait_for(websocket.receive_json(), timeout=10)
@@ -206,6 +206,8 @@ async def live_stream(websocket: WebSocket):
         await websocket.send_json({"type": "ready", "sample_rate": 16000, "format": "pcm_s16le"})
         buf = bytearray()
         chunk_size = 16000 * 2 * max(2, min(5, int(os.getenv("FARAST_LIVE_CHUNK_SECONDS", "3"))))
+        silence_bytes = 0
+        speech_seen = False
         language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
         async def flush(raw):
             if len(raw) < 16000:
@@ -231,9 +233,23 @@ async def live_stream(websocket: WebSocket):
                 if command.get("type") == "stop":
                     await flush(bytes(buf)); break
             elif message.get("bytes"):
-                buf.extend(message["bytes"][:len(message["bytes"]) - len(message["bytes"]) % 2])
-                while len(buf) >= chunk_size:
-                    chunk = bytes(buf[:chunk_size]); del buf[:chunk_size]
+                frame = message["bytes"][:len(message["bytes"]) - len(message["bytes"]) % 2]
+                if not frame:
+                    continue
+                buf.extend(frame)
+                sample_count = len(frame) // 2
+                mean_abs = sum(abs(sample[0]) for sample in struct.iter_unpack("<h", frame)) / max(1, sample_count)
+                if mean_abs >= 420:
+                    speech_seen = True
+                    silence_bytes = 0
+                elif speech_seen:
+                    silence_bytes += len(frame)
+                should_flush_silence = speech_seen and silence_bytes >= 24000 and len(buf) >= 16000
+                if len(buf) >= chunk_size or should_flush_silence:
+                    chunk = bytes(buf)
+                    buf.clear()
+                    silence_bytes = 0
+                    speech_seen = False
                     await flush(chunk)
         await websocket.close(code=1000)
     except WebSocketDisconnect:
