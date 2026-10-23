@@ -7,7 +7,7 @@ from typing import Optional
 
 import edge_tts
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -182,10 +182,9 @@ async def synthesize(request: SynthesizeRequest) -> Response:
 
 
 @app.websocket("/v1/stream")
-async def live_stream(websocket):
+async def live_stream(websocket: WebSocket):
     """Authenticated live PCM stream; audio is transcribed in short disjoint WAV chunks."""
     import hashlib, hmac, io, json, wave
-    from fastapi import WebSocketDisconnect
     await websocket.accept()
     try:
         start = await asyncio.wait_for(websocket.receive_json(), timeout=10)
