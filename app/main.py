@@ -179,3 +179,70 @@ async def synthesize(request: SynthesizeRequest) -> Response:
     except Exception as exc:
         print(f"EDGE_TTS_FAILED: {type(exc).__name__}: {exc}", flush=True)
         raise HTTPException(status_code=502, detail="Persian speech synthesis provider is unavailable") from exc
+
+
+@app.websocket("/v1/stream")
+async def live_stream(websocket):
+    """Authenticated live PCM stream; audio is transcribed in short disjoint WAV chunks."""
+    import hashlib, hmac, io, json, wave
+    from fastapi import WebSocketDisconnect
+    await websocket.accept()
+    try:
+        start = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+        token = str(start.get("token", "")) if isinstance(start, dict) else ""
+        locale = str(start.get("locale", "fa-IR")) if isinstance(start, dict) else ""
+        app_url = os.getenv("FARAST_APP_URL", "").strip().rstrip("/")
+        gateway_secret = os.getenv("FARAST_VOICE_GATEWAY_SECRET", "").strip()
+        if not token or not app_url or not gateway_secret or not GROQ_API_KEY or locale not in {"fa-IR", "en-US", "ar-SA"}:
+            await websocket.send_json({"type": "error", "message": "live_stream_not_configured"})
+            await websocket.close(code=1008)
+            return
+        signature = hmac.new(gateway_secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            verified = await client.post(app_url + "/editor/voice/stream-config", json={"token": token}, headers={"X-Farast-Voice-Gateway": signature, "Accept": "application/json"})
+        if not verified.is_success or not verified.json().get("gateway") or verified.json().get("locale") != locale:
+            await websocket.send_json({"type": "error", "message": "unauthorized"})
+            await websocket.close(code=1008)
+            return
+        await websocket.send_json({"type": "ready", "sample_rate": 16000, "format": "pcm_s16le"})
+        buf = bytearray()
+        chunk_size = 16000 * 2 * max(2, min(5, int(os.getenv("FARAST_LIVE_CHUNK_SECONDS", "3"))))
+        language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
+        async def flush(raw):
+            if len(raw) < 16000:
+                return
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, "wb") as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000); wf.writeframes(raw)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as client:
+                response = await client.post(GROQ_TRANSCRIPTIONS_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, data={"model": GROQ_ASR_MODEL, "language": language, "response_format": "json", "temperature": "0"}, files={"file": ("live.wav", wav_buf.getvalue(), "audio/wav")})
+            if response.is_success:
+                text = str(response.json().get("text", "")).strip()
+                if text:
+                    await websocket.send_json({"type": "final", "text": text})
+            else:
+                await websocket.send_json({"type": "provider_error", "status": response.status_code})
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if message.get("text") is not None:
+                try: command = json.loads(message["text"])
+                except (TypeError, ValueError): continue
+                if command.get("type") == "stop":
+                    await flush(bytes(buf)); break
+            elif message.get("bytes"):
+                buf.extend(message["bytes"][:len(message["bytes"]) - len(message["bytes"]) % 2])
+                while len(buf) >= chunk_size:
+                    chunk = bytes(buf[:chunk_size]); del buf[:chunk_size]
+                    await flush(chunk)
+        await websocket.close(code=1000)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        print(f"LIVE_STREAM_FAILED: {type(exc).__name__}", flush=True)
+        try:
+            await websocket.send_json({"type": "error", "message": "live_stream_failed"})
+            await websocket.close(code=1011)
+        except Exception:
+            pass
