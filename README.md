@@ -51,9 +51,8 @@ Set these on the Laravel server only:
     FARAST_VOICE_LOCAL_SPEECH_ENABLED=false
     FARAST_VOICE_REMOTE_BATCH_ENABLED=true
     FARAST_AI_GATEWAY_URL=https://YOUR-SERVICE.onrender.com
-    FARAST_AI_GATEWAY_TOKEN=the-gateway-token
 
-Set `FARAST_AI_GATEWAY_TOKEN`, `FARAST_VOICE_ASR_TOKEN`, and `FARAST_VOICE_TTS_TOKEN` to the same Render `FARAST_VOICE_TOKEN`. Set `VOICE_STREAM_URL=wss://YOUR-SERVICE.onrender.com` (no path suffix). Set `FARAST_VOICE_LOCAL_SPEECH_ENABLED=false`; this keeps the legacy Qwen/Sherpa/Piper stack out of the online path. The browser uses the Render WebSocket for continuous audio and server-side endpointing, while Laravel stays local and makes outbound requests to Render. Clear Laravel's config cache after changing environment values.
+Set `FARAST_VOICE_ASR_TOKEN` and `FARAST_VOICE_TTS_TOKEN` to the same Render `FARAST_VOICE_TOKEN`. The chat endpoint and live WebSocket use that same shared token; no separate AI token is required. Set `VOICE_STREAM_URL=wss://YOUR-SERVICE.onrender.com` (no path suffix). Set `FARAST_VOICE_LOCAL_SPEECH_ENABLED=false`; this keeps the legacy Qwen/Sherpa/Piper stack out of the online path. The browser uses the Render WebSocket for continuous audio and server-side endpointing, while Laravel stays local and makes outbound requests to Render. Clear Laravel's config cache after changing environment values.
 
 ## Verification boundary
 
