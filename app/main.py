@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import math
 import os
 import secrets
-from typing import Optional
+import struct
+import time
+import wave
+from collections import deque
+from typing import Literal, Optional
 
 import edge_tts
 import httpx
@@ -273,83 +282,217 @@ async def synthesize(request: SynthesizeRequest) -> Response:
         raise HTTPException(status_code=502, detail="Persian speech synthesis provider is unavailable") from exc
 
 
+def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
+    """Verify a short-lived Laravel-issued session token without calling back to Laravel."""
+    if not API_TOKEN or not token or "." not in token:
+        return None
+    encoded, signature = token.split(".", 1)
+    expected = hmac.new(API_TOKEN.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    now = int(time.time())
+    if (
+        not isinstance(payload, dict)
+        or int(payload.get("uid", 0) or 0) < 1
+        or payload.get("locale") != locale
+        or locale not in {"fa-IR", "en-US", "ar-SA"}
+        or int(payload.get("exp", 0) or 0) < now
+        or int(payload.get("iat", now + 1) or 0) > now + 30
+        or not payload.get("nonce")
+    ):
+        return None
+    return payload
+
+
+def pcm_frame_rms(frame: bytes) -> float:
+    if len(frame) != 640:
+        return 0.0
+    samples = struct.unpack("<320h", frame)
+    return math.sqrt(sum(sample * sample for sample in samples) / 320)
+
+
+async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
+    """Transcribe one endpointed 16 kHz mono PCM utterance using server-side Groq Whisper."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("asr_not_configured")
+    language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as audio_file:
+        audio_file.setnchannels(1)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(16000)
+        audio_file.writeframes(pcm)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0)) as client:
+        response = await client.post(
+            GROQ_TRANSCRIPTIONS_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            data={
+                "model": GROQ_ASR_MODEL,
+                "language": language,
+                "response_format": "json",
+                "temperature": "0",
+            },
+            files={"file": ("farast-utterance.wav", wav_buffer.getvalue(), "audio/wav")},
+        )
+    if response.status_code == 429:
+        raise RuntimeError("asr_rate_limited")
+    if not response.is_success:
+        print(f"LIVE_ASR_FAILED: status={response.status_code}", flush=True)
+        raise RuntimeError("asr_provider_failed")
+    return str(response.json().get("text", "")).strip()
+
+
 @app.websocket("/v1/stream")
 async def live_stream(websocket: WebSocket):
-    """Authenticated live PCM stream; audio is transcribed in short disjoint WAV chunks."""
-    import hashlib, hmac, io, json, wave, struct
+    """
+    Full-duplex conversational input.
+    Browser sends 16 kHz mono PCM frames continuously. Render performs server-side
+    voice activity detection and submits only complete utterances after end-of-speech.
+    """
     await websocket.accept()
     try:
         start = await asyncio.wait_for(websocket.receive_json(), timeout=10)
         token = str(start.get("token", "")) if isinstance(start, dict) else ""
         locale = str(start.get("locale", "fa-IR")) if isinstance(start, dict) else ""
-        app_url = os.getenv("FARAST_APP_URL", "").strip().rstrip("/")
-        gateway_secret = os.getenv("FARAST_VOICE_GATEWAY_SECRET", "").strip()
-        if not token or not app_url or not gateway_secret or not GROQ_API_KEY or locale not in {"fa-IR", "en-US", "ar-SA"}:
-            await websocket.send_json({"type": "error", "message": "live_stream_not_configured"})
+        session = verify_live_session_token(token, locale)
+        if not session or not GROQ_API_KEY:
+            await websocket.send_json({"type": "error", "code": "unauthorized_or_not_configured"})
             await websocket.close(code=1008)
             return
-        signature = hmac.new(gateway_secret.encode(), token.encode(), hashlib.sha256).hexdigest()
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
-            verified = await client.post(app_url + "/editor/voice/stream-config", json={"token": token}, headers={"X-Farast-Voice-Gateway": signature, "Accept": "application/json"})
-        if not verified.is_success or not verified.json().get("gateway") or verified.json().get("locale") != locale:
-            await websocket.send_json({"type": "error", "message": "unauthorized"})
-            await websocket.close(code=1008)
-            return
-        await websocket.send_json({"type": "ready", "sample_rate": 16000, "format": "pcm_s16le"})
-        buf = bytearray()
-        chunk_size = 16000 * 2 * max(2, min(5, int(os.getenv("FARAST_LIVE_CHUNK_SECONDS", "3"))))
-        silence_bytes = 0
-        speech_seen = False
-        language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
-        async def flush(raw):
-            if len(raw) < 16000:
+
+        await websocket.send_json({
+            "type": "ready",
+            "sample_rate": 16000,
+            "format": "pcm_s16le",
+            "endpointing": "server-vad",
+        })
+
+        frame_bytes = 640  # 20 ms, mono, signed 16-bit, 16 kHz.
+        end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "900")) // 20))
+        preroll_frames = max(5, min(30, int(os.getenv("FARAST_VAD_PREROLL_MS", "300")) // 20))
+        max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
+        min_utterance_frames = 12
+        noise_floor = 65.0
+        pre_roll = deque(maxlen=preroll_frames)
+        candidate = []
+        utterance = []
+        speech_active = False
+        silence_frames = 0
+        utterance_id = 0
+        pending = bytearray()
+
+        async def finish_utterance(reason: str):
+            nonlocal utterance, speech_active, silence_frames, candidate, utterance_id
+            frames = utterance
+            utterance = []
+            speech_active = False
+            silence_frames = 0
+            candidate = []
+            if len(frames) < min_utterance_frames:
                 return
-            wav_buf = io.BytesIO()
-            with wave.open(wav_buf, "wb") as wf:
-                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000); wf.writeframes(raw)
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as client:
-                response = await client.post(GROQ_TRANSCRIPTIONS_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, data={"model": GROQ_ASR_MODEL, "language": language, "response_format": "json", "temperature": "0"}, files={"file": ("live.wav", wav_buf.getvalue(), "audio/wav")})
-            if response.is_success:
-                text = str(response.json().get("text", "")).strip()
-                if text:
-                    await websocket.send_json({"type": "final", "text": text})
+            utterance_id += 1
+            raw_pcm = b"".join(frames)
+            duration_ms = int(len(frames) * 20)
+            await websocket.send_json({"type": "processing", "turn_id": utterance_id, "duration_ms": duration_ms})
+            try:
+                transcript = await transcribe_live_utterance(raw_pcm, locale)
+            except Exception as exc:
+                code = str(exc) if str(exc) in {"asr_rate_limited", "asr_not_configured"} else "asr_provider_failed"
+                await websocket.send_json({"type": "provider_error", "code": code, "turn_id": utterance_id})
+                return
+            if transcript:
+                await websocket.send_json({
+                    "type": "final",
+                    "text": transcript,
+                    "turn_id": utterance_id,
+                    "duration_ms": duration_ms,
+                    "endpoint_reason": reason,
+                })
             else:
-                await websocket.send_json({"type": "provider_error", "status": response.status_code})
+                await websocket.send_json({"type": "empty", "turn_id": utterance_id})
+
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
                 break
+
             if message.get("text") is not None:
-                try: command = json.loads(message["text"])
-                except (TypeError, ValueError): continue
-                if command.get("type") == "stop":
-                    await flush(bytes(buf)); break
-            elif message.get("bytes"):
-                frame = message["bytes"][:len(message["bytes"]) - len(message["bytes"]) % 2]
-                if not frame:
+                try:
+                    command = json.loads(message["text"])
+                except (TypeError, ValueError):
                     continue
-                buf.extend(frame)
-                sample_count = len(frame) // 2
-                mean_abs = sum(abs(sample[0]) for sample in struct.iter_unpack("<h", frame)) / max(1, sample_count)
-                if mean_abs >= 420:
-                    speech_seen = True
-                    silence_bytes = 0
-                elif speech_seen:
-                    silence_bytes += len(frame)
-                should_flush_silence = speech_seen and silence_bytes >= 24000 and len(buf) >= 16000
-                if len(buf) >= chunk_size or should_flush_silence:
-                    chunk = bytes(buf)
-                    buf.clear()
-                    silence_bytes = 0
-                    speech_seen = False
-                    await flush(chunk)
-        await websocket.close(code=1000)
+                if command.get("type") == "stop":
+                    if speech_active:
+                        await finish_utterance("session_stop")
+                    break
+                continue
+
+            data = message.get("bytes")
+            if not data:
+                continue
+            if len(data) > 24000:
+                await websocket.send_json({"type": "error", "code": "audio_frame_too_large"})
+                continue
+            pending.extend(data)
+            usable = len(pending) - (len(pending) % frame_bytes)
+            if usable <= 0:
+                continue
+            batch = bytes(pending[:usable])
+            del pending[:usable]
+
+            for offset in range(0, len(batch), frame_bytes):
+                frame = batch[offset:offset + frame_bytes]
+                rms = pcm_frame_rms(frame)
+                threshold = max(165.0, noise_floor * 2.7)
+
+                if not speech_active:
+                    if rms < threshold:
+                        noise_floor = max(35.0, min(900.0, noise_floor * 0.96 + rms * 0.04))
+                        if candidate:
+                            pre_roll.extend(candidate)
+                            candidate = []
+                        pre_roll.append(frame)
+                        continue
+
+                    candidate.append(frame)
+                    if len(candidate) < 2:
+                        continue
+
+                    speech_active = True
+                    utterance = list(pre_roll) + candidate
+                    pre_roll.clear()
+                    candidate = []
+                    silence_frames = 0
+                    await websocket.send_json({"type": "speech_started"})
+                    continue
+
+                utterance.append(frame)
+                if rms >= threshold:
+                    silence_frames = 0
+                else:
+                    silence_frames += 1
+
+                if silence_frames >= end_silence_frames:
+                    await finish_utterance("silence")
+                elif len(utterance) >= max_utterance_frames:
+                    await finish_utterance("maximum_duration")
+
     except WebSocketDisconnect:
         return
-    except Exception as exc:
-        print(f"LIVE_STREAM_FAILED: {type(exc).__name__}", flush=True)
+    except asyncio.TimeoutError:
         try:
-            await websocket.send_json({"type": "error", "message": "live_stream_failed"})
+            await websocket.close(code=1008, reason="session_start_timeout")
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"LIVE_STREAM_FAILED: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            await websocket.send_json({"type": "error", "code": "live_stream_failed"})
             await websocket.close(code=1011)
         except Exception:
             pass
