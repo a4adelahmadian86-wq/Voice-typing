@@ -29,7 +29,7 @@ This branch replaces the large local Whisper and Coqui models with a lightweight
 - Render performs server-side voice activity detection (20 ms frames, pre-roll, configurable silence endpoint, and a maximum utterance duration). After approximately 900 ms of detected silence it finalizes that utterance, sends it once to Groq Whisper, and emits `speech_started`, `processing`, `final`, `empty`, or `provider_error` events. The browser automatically submits each `final` transcript to Laravel; users do not press stop/send for every turn.
 - Laravel remains the conversation/session owner and streams chat responses from Render. It requests Persian TTS from Render and plays response chunks while keeping the microphone stream open. The browser can interrupt playback when it detects the user beginning a new utterance (barge-in).
 - This is continuous audio transport with automatic server-side turn detection, not token-by-token streaming speech recognition: Groq Whisper transcribes each completed utterance. It therefore waits for the endpointing pause plus one ASR request before the chat response begins.
-- Optional Render tuning: `FARAST_VAD_END_SILENCE_MS` (default 900), `FARAST_VAD_PREROLL_MS` (default 300), and `FARAST_VAD_MAX_UTTERANCE_MS` (default 20000).
+- Optional Render tuning: `FARAST_VAD_END_SILENCE_MS` (default 1200), `FARAST_VAD_PREROLL_MS` (default 300), and `FARAST_VAD_MAX_UTTERANCE_MS` (default 20000).
 
 ## API contract
 
