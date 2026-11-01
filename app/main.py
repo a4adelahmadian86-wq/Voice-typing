@@ -19,7 +19,7 @@ import edge_tts
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST Free Voice Gateway"
