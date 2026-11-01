@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
-AI_API_TOKEN = os.getenv("FARAST_AI_GATEWAY_TOKEN", "").strip() or API_TOKEN
+AI_API_TOKEN = API_TOKEN
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
