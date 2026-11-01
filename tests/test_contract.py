@@ -14,7 +14,7 @@ def test_health_does_not_expose_secret():
     assert "FARAST_VOICE_TOKEN" not in response.text
     assert "test-token-for-contract-tests" not in response.text
     assert "test-groq-key" not in response.text
-    assert response.json()["mode"] == "groq-asr-edge-tts"
+    assert response.json()["mode"] == "groq-asr-chat-edge-tts"
 
 
 def test_status_requires_auth():
@@ -114,12 +114,75 @@ def test_looks_like_mp3_rejects_non_audio_payload():
     assert main.looks_like_mp3(b"\x00" * 4096) is False
 
 
-def test_live_stream_rejects_unconfigured_gateway(monkeypatch):
-    monkeypatch.setenv("FARAST_APP_URL", "")
-    monkeypatch.setenv("FARAST_VOICE_GATEWAY_SECRET", "")
+def _live_token(locale="fa-IR", uid=42, lifetime=120):
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    payload = {
+        "uid": uid,
+        "locale": locale,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + lifetime,
+        "nonce": "test-session-nonce",
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    signature = hmac.new(main.API_TOKEN.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def _pcm_frame(amplitude=0):
+    import math
+    import struct
+
+    samples = [int(amplitude * math.sin(2 * math.pi * 440 * index / 16000)) for index in range(320)]
+    return struct.pack("<320h", *samples)
+
+
+def test_live_session_token_is_verified_without_laravel_callback():
+    token = _live_token()
+    payload = main.verify_live_session_token(token, "fa-IR")
+    assert payload["uid"] == 42
+    assert payload["locale"] == "fa-IR"
+    assert main.verify_live_session_token(token, "en-US") is None
+    assert main.verify_live_session_token(token + "bad", "fa-IR") is None
+
+
+def test_live_stream_accepts_signed_session_without_laravel_url(monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.delenv("FARAST_APP_URL", raising=False)
     with TestClient(main.app) as client:
-        with client.websocket_connect("/v1/stream?v=1") as websocket:
-            websocket.send_json({"type": "start", "token": "not-a-valid-token", "locale": "fa-IR"})
-            message = websocket.receive_json()
-            assert message["type"] == "error"
-            assert message["message"] == "live_stream_not_configured"
+        with client.websocket_connect("/v1/stream") as websocket:
+            websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
+            ready = websocket.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["endpointing"] == "server-vad"
+            websocket.send_json({"type": "stop"})
+
+
+def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monkeypatch):
+    async def fake_transcription(pcm, locale):
+        assert len(pcm) >= 640 * 12
+        assert locale == "fa-IR"
+        return "سلام فراست"
+
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr(main, "transcribe_live_utterance", fake_transcription)
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/v1/stream") as websocket:
+            websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
+            assert websocket.receive_json()["type"] == "ready"
+            for _ in range(4):
+                websocket.send_bytes(_pcm_frame(5000))
+            assert websocket.receive_json()["type"] == "speech_started"
+            for _ in range(48):
+                websocket.send_bytes(_pcm_frame(0))
+            processing = websocket.receive_json()
+            final = websocket.receive_json()
+            assert processing["type"] == "processing"
+            assert final["type"] == "final"
+            assert final["text"] == "سلام فراست"
+            assert final["endpoint_reason"] == "silence"
+            websocket.send_json({"type": "stop"})
