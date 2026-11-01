@@ -22,12 +22,14 @@ This branch replaces the large local Whisper and Coqui models with a lightweight
 4. Deploy and verify /health, then /ready.
 5. Verify Persian audio using POST /v1/synthesize and a short Persian recording using POST /v1/transcribe before changing the live Laravel settings.
 
-## Live WebSocket speech stream (experimental)
+## Conversational WebSocket speech stream
 
-- `wss://YOUR-SERVICE.onrender.com/v1/stream` accepts a JSON start frame (`type=start`, short-lived Laravel `token`, and `locale`) followed by binary mono PCM16 little-endian audio at 16 kHz. It transcribes disjoint short WAV chunks through the configured Groq Whisper model and sends `ready`, `final`, `provider_error`, or `error` JSON events.
-- Set `FARAST_APP_URL` to the canonical HTTPS origin of the Laravel site and set `FARAST_VOICE_GATEWAY_SECRET` to the same random secret configured as `services.voice_stream.gateway_secret` in Laravel. These must be secrets in the hosting dashboard, not committed values. The gateway validates each session token against Laravel's signed `/editor/voice/stream-config` endpoint before processing audio.
-- Set Laravel `VOICE_STREAM_URL` to the service origin (no `/v1/stream` suffix) and `VOICE_GATEWAY_SECRET` to the same secret (these populate `services.voice_stream.url` and `services.voice_stream.gateway_secret`). The browser app appends `/v1/stream` automatically.
-- The stream currently uses chunked Whisper requests, not a native token-by-token streaming ASR model. It is an experimental live transport, and real-device latency, pause detection, and end-to-end voice turns must be validated before describing it as production-ready.
+- `wss://YOUR-SERVICE.onrender.com/v1/stream` accepts a JSON start frame (`type=start`, short-lived signed session `token`, and `locale`) followed by continuous binary mono PCM16 little-endian audio at 16 kHz.
+- Render verifies the short-lived token locally using the existing shared `FARAST_VOICE_TOKEN`. Laravel signs the token; Render does not call back to Laravel. This is required because Laravel may be running on localhost and does not need a public URL.
+- Render performs server-side voice activity detection (20 ms frames, pre-roll, configurable silence endpoint, and a maximum utterance duration). After approximately 900 ms of detected silence it finalizes that utterance, sends it once to Groq Whisper, and emits `speech_started`, `processing`, `final`, `empty`, or `provider_error` events. The browser automatically submits each `final` transcript to Laravel; users do not press stop/send for every turn.
+- Laravel remains the conversation/session owner and streams chat responses from Render. It requests Persian TTS from Render and plays response chunks while keeping the microphone stream open. The browser can interrupt playback when it detects the user beginning a new utterance (barge-in).
+- This is continuous audio transport with automatic server-side turn detection, not token-by-token streaming speech recognition: Groq Whisper transcribes each completed utterance. It therefore waits for the endpointing pause plus one ASR request before the chat response begins.
+- Optional Render tuning: `FARAST_VAD_END_SILENCE_MS` (default 900), `FARAST_VAD_PREROLL_MS` (default 300), and `FARAST_VAD_MAX_UTTERANCE_MS` (default 20000).
 
 ## API contract
 
@@ -51,8 +53,8 @@ Set these on the Laravel server only:
     FARAST_AI_GATEWAY_URL=https://YOUR-SERVICE.onrender.com
     FARAST_AI_GATEWAY_TOKEN=the-gateway-token
 
-Set `FARAST_AI_GATEWAY_TOKEN` to the Render `FARAST_AI_GATEWAY_TOKEN` if configured; otherwise it can reuse `FARAST_VOICE_TOKEN`. Both ASR and TTS currently use the same voice gateway token. For the standard online setup, `FARAST_VOICE_LOCAL_SPEECH_ENABLED=false` keeps Qwen/Sherpa/Piper off the user's device, while `FARAST_VOICE_REMOTE_BATCH_ENABLED=true` enables browser recording followed by server-side Render transcription. Clear Laravel's config cache after changing environment values if the hosting platform requires it.
+Set `FARAST_AI_GATEWAY_TOKEN`, `FARAST_VOICE_ASR_TOKEN`, and `FARAST_VOICE_TTS_TOKEN` to the same Render `FARAST_VOICE_TOKEN`. Set `VOICE_STREAM_URL=wss://YOUR-SERVICE.onrender.com` (no path suffix). Set `FARAST_VOICE_LOCAL_SPEECH_ENABLED=false`; this keeps the legacy Qwen/Sherpa/Piper stack out of the online path. The browser uses the Render WebSocket for continuous audio and server-side endpointing, while Laravel stays local and makes outbound requests to Render. Clear Laravel's config cache after changing environment values.
 
-## What remains unverified
+## Verification boundary
 
-The code contract can be tested without provider credentials, but live Groq transcription, Edge TTS Persian audio, Iranian network reachability, Render deployment, and Laravel end-to-end playback have not yet been verified. Do not merge to main until those checks pass.
+Automated contract tests cover signed session authentication and server-side silence endpointing. Real microphone behavior, false-positive/false-negative VAD in different rooms, Groq latency/rate limits, Persian Edge TTS playback, barge-in timing, and the full local-Laravel-to-Render round trip still require a real browser session. Do not call the end-to-end experience production-verified until those checks pass.
