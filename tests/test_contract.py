@@ -177,7 +177,7 @@ def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monk
             for _ in range(4):
                 websocket.send_bytes(_pcm_frame(5000))
             assert websocket.receive_json()["type"] == "speech_started"
-            for _ in range(48):
+            for _ in range(65):
                 websocket.send_bytes(_pcm_frame(0))
             processing = websocket.receive_json()
             final = websocket.receive_json()
