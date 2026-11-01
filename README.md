@@ -3,6 +3,7 @@
 This branch replaces the large local Whisper and Coqui models with a lightweight gateway:
 - Speech recognition: Groq's hosted Whisper API (whisper-large-v3 by default for accuracy; switch to turbo only if latency/quota trade-offs are needed).
 - Persian speech output: Microsoft's Edge online TTS through the community edge-tts client, using the fixed fa-IR-FaridNeural voice. A single short retry is attempted and MP3 bytes are validated before they are returned.
+- Assistant chat: an authenticated OpenAI-compatible `POST /v1/chat/completions` proxy to Groq, with both JSON and SSE streaming responses. The upstream model is pinned by the server-side `GROQ_CHAT_MODEL`; browser-supplied model names are ignored.
 - FastAPI protects the gateway with a separate bearer token. Laravel must keep both provider and gateway credentials server-side.
 
 ## Important limitations — read before deployment
@@ -45,8 +46,12 @@ Set these on the Laravel server only:
     FARAST_VOICE_TTS_URL=https://YOUR-SERVICE.onrender.com/v1/synthesize
     FARAST_VOICE_TTS_TOKEN=the-gateway-token
     FARAST_VOICE_TTS_VOICE_ID=farast-fa-male-v1
+    FARAST_VOICE_LOCAL_SPEECH_ENABLED=false
+    FARAST_VOICE_REMOTE_BATCH_ENABLED=true
+    FARAST_AI_GATEWAY_URL=https://YOUR-SERVICE.onrender.com
+    FARAST_AI_GATEWAY_TOKEN=the-gateway-token
 
-Both ASR and TTS currently use the same gateway token. Clear Laravel's config cache after changing environment values if the hosting platform requires it.
+Set `FARAST_AI_GATEWAY_TOKEN` to the Render `FARAST_AI_GATEWAY_TOKEN` if configured; otherwise it can reuse `FARAST_VOICE_TOKEN`. Both ASR and TTS currently use the same voice gateway token. For the standard online setup, `FARAST_VOICE_LOCAL_SPEECH_ENABLED=false` keeps Qwen/Sherpa/Piper off the user's device, while `FARAST_VOICE_REMOTE_BATCH_ENABLED=true` enables browser recording followed by server-side Render transcription. Clear Laravel's config cache after changing environment values if the hosting platform requires it.
 
 ## What remains unverified
 
