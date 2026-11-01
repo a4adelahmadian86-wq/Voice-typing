@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
+AI_API_TOKEN = os.getenv("FARAST_AI_GATEWAY_TOKEN", "").strip() or API_TOKEN
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
+GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
 EDGE_TTS_VOICE = os.getenv("FARAST_EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 VOICE_ID = os.getenv("FARAST_VOICE_ID", "farast-fa-male-v1")
@@ -41,6 +44,28 @@ class SynthesizeRequest(BaseModel):
     voice_id: str = VOICE_ID
 
 
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1, max_length=12000)
+
+
+class ChatCompletionRequest(BaseModel):
+    # The public model name is intentionally ignored; the server pins its upstream model.
+    model: str = Field(default="farast-general", max_length=100)
+    messages: list[ChatMessage] = Field(min_length=1, max_length=20)
+    temperature: float = Field(default=0.2, ge=0, le=2)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=2048)
+    max_completion_tokens: Optional[int] = Field(default=None, ge=1, le=2048)
+    stream: bool = False
+
+
+def authorize_ai(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> None:
+    if not AI_API_TOKEN:
+        raise HTTPException(status_code=503, detail="AI gateway is not configured")
+    if credentials is None or credentials.scheme.lower() != "bearer" or not secrets.compare_digest(credentials.credentials, AI_API_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -48,16 +73,17 @@ def health() -> dict:
         "status": "ok",
         "asr_configured": bool(GROQ_API_KEY),
         "tts_configured": bool(EDGE_TTS_VOICE),
+        "chat_configured": bool(GROQ_API_KEY and GROQ_CHAT_MODEL and AI_API_TOKEN),
         "voice_id": VOICE_ID,
-        "mode": "groq-asr-edge-tts",
+        "mode": "groq-asr-chat-edge-tts",
     }
 
 
 @app.get("/ready")
 def ready() -> dict:
-    if not API_TOKEN or not GROQ_API_KEY or not EDGE_TTS_VOICE:
-        raise HTTPException(status_code=503, detail="Missing required voice gateway configuration")
-    return {"status": "ready", "asr_ready": True, "tts_ready": True, "voice_id": VOICE_ID}
+    if not API_TOKEN or not GROQ_API_KEY or not EDGE_TTS_VOICE or not AI_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Missing required voice and AI gateway configuration")
+    return {"status": "ready", "asr_ready": True, "tts_ready": True, "chat_ready": True, "voice_id": VOICE_ID}
 
 
 @app.get("/v1/status", dependencies=[Depends(authorize)])
@@ -71,6 +97,72 @@ def status() -> dict:
         "asr_model": GROQ_ASR_MODEL,
         "tts_voice": EDGE_TTS_VOICE,
     }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest, _auth: None = Depends(authorize_ai)):
+    """Authenticated OpenAI-compatible chat proxy; prompts and provider keys stay server-side."""
+    if not GROQ_API_KEY or not GROQ_CHAT_MODEL:
+        raise HTTPException(status_code=503, detail="Chat provider is not configured")
+
+    messages = [item.model_dump() for item in request.messages]
+    if sum(len(item["content"]) for item in messages) > 30000:
+        raise HTTPException(status_code=413, detail="Chat request is too large")
+
+    max_output = request.max_completion_tokens or request.max_tokens or 700
+    payload = {
+        "model": GROQ_CHAT_MODEL,
+        "messages": messages,
+        "temperature": request.temperature,
+        "max_completion_tokens": max_output,
+        "stream": request.stream,
+    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Accept": "text/event-stream" if request.stream else "application/json"}
+
+    if request.stream:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0))
+        try:
+            upstream_request = client.build_request("POST", GROQ_CHAT_URL, headers=headers, json=payload)
+            upstream = await client.send(upstream_request, stream=True)
+        except httpx.HTTPError as exc:
+            await client.aclose()
+            print(f"GROQ_CHAT_CONNECTION_FAILED: {type(exc).__name__}", flush=True)
+            raise HTTPException(status_code=502, detail="Chat provider is unavailable") from exc
+
+        if not upstream.is_success:
+            status_code = upstream.status_code
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=429 if status_code == 429 else 502, detail="Chat provider rejected the request")
+
+        async def relay_events():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            relay_events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+            upstream = await client.post(GROQ_CHAT_URL, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        print(f"GROQ_CHAT_CONNECTION_FAILED: {type(exc).__name__}", flush=True)
+        raise HTTPException(status_code=502, detail="Chat provider is unavailable") from exc
+
+    if not upstream.is_success:
+        raise HTTPException(status_code=429 if upstream.status_code == 429 else 502, detail="Chat provider rejected the request")
+    try:
+        return upstream.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Chat provider returned an invalid response") from exc
 
 
 @app.post("/v1/transcribe", dependencies=[Depends(authorize)])
