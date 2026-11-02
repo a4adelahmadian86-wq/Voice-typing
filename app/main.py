@@ -20,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.audio import normalize_speech_pcm, pcm_frame_rms, speech_threshold
+from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms, speech_threshold
 
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
@@ -393,6 +393,8 @@ async def live_stream(websocket: WebSocket):
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
         min_utterance_frames = 12
         noise_floor = 35.0
+        calibration_levels = []
+        calibration_frame_count = 10  # 200 ms; keep these frames in pre-roll.
         pre_roll = deque(maxlen=preroll_frames)
         candidate = []
         utterance = []
@@ -463,6 +465,14 @@ async def live_stream(websocket: WebSocket):
             for offset in range(0, len(batch), frame_bytes):
                 frame = batch[offset:offset + frame_bytes]
                 rms = pcm_frame_rms(frame)
+
+                if not speech_active and len(calibration_levels) < calibration_frame_count:
+                    calibration_levels.append(rms)
+                    pre_roll.append(frame)
+                    if len(calibration_levels) == calibration_frame_count:
+                        noise_floor = estimate_noise_floor(calibration_levels)
+                    continue
+
                 threshold = speech_threshold(noise_floor)
 
                 if not speech_active:
