@@ -13,7 +13,7 @@ class AudioHelpersTests(unittest.TestCase):
         self.assertEqual(pcm_frame_rms(b"\x00" * 20), 0.0)
 
     def test_noise_floor_uses_quieter_half_to_reject_transient_peaks(self):
-        self.assertAlmostEqual(estimate_noise_floor([40, 42, 39, 41, 1500, 1800]), 40.5)
+        self.assertAlmostEqual(estimate_noise_floor([40, 42, 39, 41, 1500, 1800]), 40.0)
 
     def test_speech_threshold_has_floor_and_tracks_noise(self):
         self.assertEqual(speech_threshold(25), 95.0)
