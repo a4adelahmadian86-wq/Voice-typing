@@ -18,9 +18,19 @@ def pcm_frame_rms(frame: bytes) -> float:
     return math.sqrt(sum(sample * sample for sample in samples) / FRAME_SAMPLES)
 
 
+def estimate_noise_floor(levels: list[float]) -> float:
+    """Estimate ambient RMS from the quieter half of a short calibration window."""
+    if not levels:
+        return 35.0
+    ordered = sorted(max(0.0, float(level)) for level in levels)
+    quieter = ordered[: max(1, (len(ordered) + 1) // 2)]
+    estimate = sum(quieter) / len(quieter)
+    return max(25.0, min(400.0, estimate))
+
+
 def speech_threshold(noise_floor: float) -> float:
     """Conservative adaptive threshold in PCM16 units."""
-    return max(95.0, min(900.0, float(noise_floor) * 2.2))
+    return max(95.0, min(900.0, float(noise_floor) * 1.8))
 
 
 def normalize_speech_pcm(
