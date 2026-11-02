@@ -176,8 +176,12 @@ def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monk
             assert websocket.receive_json()["type"] == "ready"
             for _ in range(4):
                 websocket.send_bytes(_pcm_frame(5000))
+            # Keep the microphone stream continuous while the first 200 ms of
+            # audio is calibrated; the initial speech must survive in pre-roll.
+            for _ in range(6):
+                websocket.send_bytes(_pcm_frame(0))
             assert websocket.receive_json()["type"] == "speech_started"
-            for _ in range(65):
+            for _ in range(59):
                 websocket.send_bytes(_pcm_frame(0))
             processing = websocket.receive_json()
             final = websocket.receive_json()

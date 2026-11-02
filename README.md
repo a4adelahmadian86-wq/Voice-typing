@@ -26,10 +26,10 @@ This branch replaces the large local Whisper and Coqui models with a lightweight
 
 - `wss://YOUR-SERVICE.onrender.com/v1/stream` accepts a JSON start frame (`type=start`, short-lived signed session `token`, and `locale`) followed by continuous binary mono PCM16 little-endian audio at 16 kHz.
 - Render verifies the short-lived token locally using the existing shared `FARAST_VOICE_TOKEN`. Laravel signs the token; Render does not call back to Laravel. This is required because Laravel may be running on localhost and does not need a public URL.
-- Render performs server-side voice activity detection (20 ms frames, pre-roll, configurable silence endpoint, and a maximum utterance duration). After approximately 900 ms of detected silence it finalizes that utterance, sends it once to Groq Whisper, and emits `speech_started`, `processing`, `final`, `empty`, or `provider_error` events. The browser automatically submits each `final` transcript to Laravel; users do not press stop/send for every turn.
+- Render performs server-side voice activity detection (20 ms frames, pre-roll, configurable silence endpoint, and a maximum utterance duration). After approximately 1200 ms of detected silence it finalizes that utterance, sends it once to Groq Whisper, and emits `speech_started`, `processing`, `final`, `empty`, or `provider_error` events. The browser automatically submits each `final` transcript to Laravel; users do not press stop/send for every turn.
 - Laravel remains the conversation/session owner and streams chat responses from Render. It requests Persian TTS from Render and plays response chunks while keeping the microphone stream open. The browser can interrupt playback when it detects the user beginning a new utterance (barge-in).
 - This is continuous audio transport with automatic server-side turn detection, not token-by-token streaming speech recognition: Groq Whisper transcribes each completed utterance. It therefore waits for the endpointing pause plus one ASR request before the chat response begins.
-- Optional Render tuning: `FARAST_VAD_END_SILENCE_MS` (default 1200), `FARAST_VAD_PREROLL_MS` (default 300), and `FARAST_VAD_MAX_UTTERANCE_MS` (default 20000).
+- Optional Render tuning: `FARAST_VAD_END_SILENCE_MS` (default 1200), `FARAST_VAD_PREROLL_MS` (default 500), and `FARAST_VAD_MAX_UTTERANCE_MS` (default 20000).
 
 ## API contract
 
@@ -56,4 +56,4 @@ Set `FARAST_VOICE_ASR_TOKEN` and `FARAST_VOICE_TTS_TOKEN` to the same Render `FA
 
 ## Verification boundary
 
-Automated contract tests cover signed session authentication and server-side silence endpointing. Real microphone behavior, false-positive/false-negative VAD in different rooms, Groq latency/rate limits, Persian Edge TTS playback, barge-in timing, and the full local-Laravel-to-Render round trip still require a real browser session. Do not call the end-to-end experience production-verified until those checks pass.
+Dependency-free unit tests cover PCM framing, adaptive VAD thresholds, and safe quiet-speech normalization. The browser continuously sends PCM so server-side VAD can retain pre-roll and silence context. Real microphone behavior, false-positive/false-negative VAD in different rooms, Groq latency/rate limits, Persian Edge TTS playback, barge-in timing, and the full local-Laravel-to-Render round trip still require a real browser session. Do not call the end-to-end experience production-verified until those checks pass.
