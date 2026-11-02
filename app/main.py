@@ -240,7 +240,8 @@ async def synthesize_mp3(text: str) -> bytes:
     last_error: Optional[Exception] = None
     # One short retry handles transient websocket/endpoint failures without
     # adding long waits to voice conversations. The configured voice stays fixed.
-    for attempt in range(2):
+    retry_delays = (0.5, 1.25)
+    for attempt in range(3):
         try:
             communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
             chunks: list[bytes] = []
@@ -253,9 +254,10 @@ async def synthesize_mp3(text: str) -> bytes:
             return audio
         except Exception as exc:
             last_error = exc
-            if attempt == 0:
-                await asyncio.sleep(0.35)
-    raise RuntimeError("Edge TTS failed after one retry") from last_error
+            if attempt < len(retry_delays):
+                await asyncio.sleep(retry_delays[attempt])
+    error_type = type(last_error).__name__ if last_error is not None else "UnknownError"
+    raise RuntimeError(f"Edge TTS failed after 3 attempts ({error_type})") from last_error
 
 
 @app.post("/v1/synthesize", dependencies=[Depends(authorize)])
