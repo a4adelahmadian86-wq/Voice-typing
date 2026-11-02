@@ -88,7 +88,7 @@ def test_synthesize_returns_error_when_provider_returns_no_audio(monkeypatch):
     assert response.json()["detail"] == "Persian speech synthesis provider is unavailable"
 
 
-def test_synthesize_mp3_retries_invalid_provider_audio(monkeypatch):
+def test_synthesize_mp3_retries_transient_provider_failures(monkeypatch):
     calls = {"count": 0}
 
     class FakeCommunicate:
@@ -98,14 +98,17 @@ def test_synthesize_mp3_retries_invalid_provider_audio(monkeypatch):
 
         async def stream(self):
             calls["count"] += 1
-            if calls["count"] == 1:
-                yield {"type": "audio", "data": b"\x00" * 2048}
-                return
+            if calls["count"] < 3:
+                raise ConnectionError("temporary provider disconnect")
             yield {"type": "audio", "data": b"ID3" + (b"\x00" * 2048)}
 
+    async def no_wait(_seconds):
+        return None
+
     monkeypatch.setattr(main.edge_tts, "Communicate", FakeCommunicate)
+    monkeypatch.setattr(main.asyncio, "sleep", no_wait)
     audio = asyncio.run(main.synthesize_mp3("سلام"))
-    assert calls["count"] == 2
+    assert calls["count"] == 3
     assert audio.startswith(b"ID3")
     assert main.looks_like_mp3(audio)
 
