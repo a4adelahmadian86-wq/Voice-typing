@@ -25,7 +25,7 @@ def estimate_noise_floor(levels: list[float]) -> float:
     ordered = sorted(max(0.0, float(level)) for level in levels)
     quieter = ordered[: max(1, (len(ordered) + 1) // 2)]
     estimate = sum(quieter) / len(quieter)
-    return max(25.0, min(400.0, estimate))
+    return max(25.0, min(250.0, estimate))
 
 
 def speech_threshold(noise_floor: float) -> float:
