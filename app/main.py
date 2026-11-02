@@ -477,7 +477,7 @@ async def live_stream(websocket: WebSocket):
 
                 if not speech_active:
                     if rms < threshold:
-                        noise_floor = max(25.0, min(400.0, noise_floor * 0.98 + rms * 0.02))
+                        noise_floor = max(25.0, min(250.0, noise_floor * 0.98 + rms * 0.02))
                         if candidate:
                             pre_roll.extend(candidate)
                             candidate = []
