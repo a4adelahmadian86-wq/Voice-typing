@@ -471,6 +471,30 @@ async def live_stream(websocket: WebSocket):
                     pre_roll.append(frame)
                     if len(calibration_levels) == calibration_frame_count:
                         noise_floor = estimate_noise_floor(calibration_levels)
+                        calibration_threshold = speech_threshold(noise_floor)
+                        # The user can begin speaking as soon as the microphone opens.
+                        # Re-check the retained calibration frames so the first 200 ms
+                        # of speech is not mistaken for ambient noise and discarded.
+                        speech_pair = next(
+                            (
+                                index
+                                for index in range(len(calibration_levels) - 1)
+                                if calibration_levels[index] >= calibration_threshold
+                                and calibration_levels[index + 1] >= calibration_threshold
+                            ),
+                            None,
+                        )
+                        if speech_pair is not None:
+                            speech_active = True
+                            utterance = list(pre_roll)
+                            pre_roll.clear()
+                            last_active = max(
+                                index
+                                for index, level in enumerate(calibration_levels)
+                                if level >= calibration_threshold
+                            )
+                            silence_frames = len(calibration_levels) - last_active - 1
+                            await websocket.send_json({"type": "speech_started"})
                     continue
 
                 threshold = speech_threshold(noise_floor)
