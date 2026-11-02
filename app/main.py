@@ -6,10 +6,8 @@ import hashlib
 import hmac
 import io
 import json
-import math
 import os
 import secrets
-import struct
 import time
 import wave
 from collections import deque
@@ -21,6 +19,8 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Web
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+
+from app.audio import normalize_speech_pcm, pcm_frame_rms, speech_threshold
 
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
@@ -310,42 +310,54 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
     return payload
 
 
-def pcm_frame_rms(frame: bytes) -> float:
-    if len(frame) != 640:
-        return 0.0
-    samples = struct.unpack("<320h", frame)
-    return math.sqrt(sum(sample * sample for sample in samples) / 320)
-
-
 async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
     """Transcribe one endpointed 16 kHz mono PCM utterance using server-side Groq Whisper."""
     if not GROQ_API_KEY:
         raise RuntimeError("asr_not_configured")
     language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
+    normalized_pcm, gain, speech_rms = normalize_speech_pcm(pcm)
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as audio_file:
         audio_file.setnchannels(1)
         audio_file.setsampwidth(2)
         audio_file.setframerate(16000)
-        audio_file.writeframes(pcm)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0)) as client:
-        response = await client.post(
-            GROQ_TRANSCRIPTIONS_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            data={
-                "model": GROQ_ASR_MODEL,
-                "language": language,
-                "response_format": "json",
-                "temperature": "0",
-            },
-            files={"file": ("farast-utterance.wav", wav_buffer.getvalue(), "audio/wav")},
-        )
+        audio_file.writeframes(normalized_pcm)
+
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0)) as client:
+            response = await client.post(
+                GROQ_TRANSCRIPTIONS_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                data={
+                    "model": GROQ_ASR_MODEL,
+                    "language": language,
+                    "response_format": "json",
+                    "temperature": "0",
+                },
+                files={"file": ("farast-utterance.wav", wav_buffer.getvalue(), "audio/wav")},
+            )
+    except httpx.HTTPError as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        print(f"LIVE_ASR_CONNECTION_FAILED: model={GROQ_ASR_MODEL} elapsed_ms={elapsed_ms} error={type(exc).__name__}", flush=True)
+        raise RuntimeError("asr_provider_unavailable") from exc
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
     if response.status_code == 429:
+        print(f"LIVE_ASR_RATE_LIMITED: model={GROQ_ASR_MODEL} elapsed_ms={elapsed_ms}", flush=True)
         raise RuntimeError("asr_rate_limited")
     if not response.is_success:
-        print(f"LIVE_ASR_FAILED: status={response.status_code}", flush=True)
+        print(f"LIVE_ASR_FAILED: model={GROQ_ASR_MODEL} status={response.status_code} elapsed_ms={elapsed_ms}", flush=True)
         raise RuntimeError("asr_provider_failed")
-    return str(response.json().get("text", "")).strip()
+
+    transcript = str(response.json().get("text", "")).strip()
+    duration_ms = int(len(pcm) * 1000 / 32000)
+    print(
+        f"LIVE_ASR_OK: model={GROQ_ASR_MODEL} locale={locale} duration_ms={duration_ms} "
+        f"latency_ms={elapsed_ms} speech_rms={speech_rms:.4f} gain={gain:.2f} chars={len(transcript)}",
+        flush=True,
+    )
+    return transcript
 
 
 @app.websocket("/v1/stream")
@@ -371,14 +383,16 @@ async def live_stream(websocket: WebSocket):
             "sample_rate": 16000,
             "format": "pcm_s16le",
             "endpointing": "server-vad",
+            "provider": "Groq Whisper",
+            "model": GROQ_ASR_MODEL,
         })
 
         frame_bytes = 640  # 20 ms, mono, signed 16-bit, 16 kHz.
         end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "1200")) // 20))
-        preroll_frames = max(5, min(30, int(os.getenv("FARAST_VAD_PREROLL_MS", "300")) // 20))
+        preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
         min_utterance_frames = 12
-        noise_floor = 65.0
+        noise_floor = 35.0
         pre_roll = deque(maxlen=preroll_frames)
         candidate = []
         utterance = []
@@ -449,11 +463,11 @@ async def live_stream(websocket: WebSocket):
             for offset in range(0, len(batch), frame_bytes):
                 frame = batch[offset:offset + frame_bytes]
                 rms = pcm_frame_rms(frame)
-                threshold = max(165.0, noise_floor * 2.7)
+                threshold = speech_threshold(noise_floor)
 
                 if not speech_active:
                     if rms < threshold:
-                        noise_floor = max(35.0, min(900.0, noise_floor * 0.96 + rms * 0.04))
+                        noise_floor = max(25.0, min(400.0, noise_floor * 0.98 + rms * 0.02))
                         if candidate:
                             pre_roll.extend(candidate)
                             candidate = []
