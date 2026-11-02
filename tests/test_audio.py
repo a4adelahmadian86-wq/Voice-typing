@@ -10,7 +10,7 @@ class AudioHelpersTests(unittest.TestCase):
         self.assertAlmostEqual(pcm_frame_rms(frame), 1000.0)
 
     def test_pcm_frame_rms_rejects_incomplete_frames(self):
-        self.assertEqual(pcm_frame_rms(b"\\x00" * 20), 0.0)
+        self.assertEqual(pcm_frame_rms(b"\x00" * 20), 0.0)
 
     def test_speech_threshold_has_floor_and_tracks_noise(self):
         self.assertEqual(speech_threshold(25), 95.0)
@@ -32,7 +32,7 @@ class AudioHelpersTests(unittest.TestCase):
         self.assertEqual(gain, 1.0)
 
     def test_normalization_leaves_silence_unchanged(self):
-        pcm = b"\\x00" * 1280
+        pcm = b"\x00" * 1280
         normalized, gain, speech_rms = normalize_speech_pcm(pcm)
         self.assertEqual(normalized, pcm)
         self.assertEqual(gain, 1.0)
