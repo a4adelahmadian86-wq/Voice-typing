@@ -193,3 +193,46 @@ def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monk
             assert final["text"] == "سلام فراست"
             assert final["endpoint_reason"] == "silence"
             websocket.send_json({"type": "stop"})
+
+
+
+def test_live_transcription_sends_persian_context_prompt(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {"text": "سلام، فراست"}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, data, files):
+            captured["url"] = url
+            captured["data"] = data
+            captured["filename"] = files["file"][0]
+            captured["content_type"] = files["file"][2]
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    pcm = _pcm_frame(3000) * 30
+    transcript = asyncio.run(main.transcribe_live_utterance(pcm, "fa-IR"))
+
+    assert transcript == "سلام، فراست"
+    assert captured["data"]["model"] == "whisper-large-v3"
+    assert captured["data"]["language"] == "fa"
+    assert captured["data"]["temperature"] == "0"
+    assert "محاوره‌ای" in captured["data"]["prompt"]
+    assert "فراست" in captured["data"]["prompt"]
+    assert captured["filename"] == "farast-utterance.wav"
+    assert captured["content_type"] == "audio/wav"
