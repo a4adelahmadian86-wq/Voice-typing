@@ -34,6 +34,11 @@ VOICE_ID = os.getenv("FARAST_VOICE_ID", "farast-fa-male-v1")
 MAX_AUDIO_BYTES = max(1024, int(os.getenv("FARAST_MAX_AUDIO_BYTES", str(15 * 1024 * 1024))))
 MAX_TEXT_CHARS = max(1, int(os.getenv("FARAST_MAX_TEXT_CHARS", "1200")))
 GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+PERSIAN_ASR_PROMPT = (
+    "این گفتار فارسی ایران و معمولاً محاوره‌ای است. واژه‌ها و جمله‌ها را دقیقاً همان‌طور که شنیده می‌شوند بنویس؛ "
+    "متن را ترجمه یا خلاصه نکن. نام‌ها و اصطلاحات زمینه‌ای ممکن است شامل فراست، دستیار صوتی، تایپ، ویرایشگر، "
+    "گفت‌وگوی زنده و میکروفون باشند."
+)
 
 app = FastAPI(title=APP_NAME, version="0.2.0")
 
@@ -204,6 +209,7 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
                     "language": language,
                     "response_format": "json",
                     "temperature": "0",
+                    **({"prompt": PERSIAN_ASR_PROMPT} if locale == "fa-IR" else {}),
                 },
                 files={"file": (f"recording.{suffix}", data, audio.content_type or "application/octet-stream")},
             )
@@ -336,6 +342,7 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
                     "language": language,
                     "response_format": "json",
                     "temperature": "0",
+                    **({"prompt": PERSIAN_ASR_PROMPT} if locale == "fa-IR" else {}),
                 },
                 files={"file": ("farast-utterance.wav", wav_buffer.getvalue(), "audio/wav")},
             )
@@ -390,7 +397,7 @@ async def live_stream(websocket: WebSocket):
         })
 
         frame_bytes = 640  # 20 ms, mono, signed 16-bit, 16 kHz.
-        end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "1200")) // 20))
+        end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "1000")) // 20))
         preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
         min_utterance_frames = 12
