@@ -1,0 +1,28 @@
+name: Keep free Render voice gateway warm
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Wake and keep the operational voice gateway active
+        run: |
+          url="https://voice-typing-r5r7.onrender.com/health"
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --max-time 70 "$url"; then
+              echo
+              echo "Voice gateway health endpoint responded."
+              exit 0
+            fi
+            echo "Health request attempt $attempt failed; retrying shortly."
+            sleep 5
+          done
+          exit 1
