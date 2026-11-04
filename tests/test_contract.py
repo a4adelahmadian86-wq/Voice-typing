@@ -236,3 +236,13 @@ def test_live_transcription_sends_persian_context_prompt(monkeypatch):
     assert "فراست" in captured["data"]["prompt"]
     assert captured["filename"] == "farast-utterance.wav"
     assert captured["content_type"] == "audio/wav"
+
+
+def test_health_allows_cross_origin_render_wake_probe():
+    response = TestClient(main.app).get(
+        "/health",
+        headers={"Origin": "https://farast.example"},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["cache-control"] == "no-store"
