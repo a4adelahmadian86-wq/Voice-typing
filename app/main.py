@@ -43,6 +43,17 @@ PERSIAN_ASR_PROMPT = (
 app = FastAPI(title=APP_NAME, version="0.2.0")
 
 
+@app.middleware("http")
+async def allow_public_health_probe(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/health":
+        # The browser uses this public, secret-free endpoint to wake a sleeping
+        # Render Free instance before attempting the WebSocket upgrade.
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -382,7 +393,13 @@ async def live_stream(websocket: WebSocket):
         token = str(start.get("token", "")) if isinstance(start, dict) else ""
         locale = str(start.get("locale", "fa-IR")) if isinstance(start, dict) else ""
         session = verify_live_session_token(token, locale)
-        if not session or not GROQ_API_KEY:
+        print(
+            f"LIVE_STREAM_START_RECEIVED: message_type={start.get('type', 'invalid') if isinstance(start, dict) else 'invalid'} "
+            f"token_present={bool(token)} locale={locale} token_valid={bool(session)} asr_configured={bool(GROQ_API_KEY)}",
+            flush=True,
+        )
+        if not session or not GROQ_API_KEY or (isinstance(start, dict) and start.get("type") != "start"):
+            print("LIVE_STREAM_AUTH_REJECTED: invalid_start_or_missing_provider_config", flush=True)
             await websocket.send_json({"type": "error", "code": "unauthorized_or_not_configured"})
             await websocket.close(code=1008)
             return
@@ -543,6 +560,7 @@ async def live_stream(websocket: WebSocket):
     except WebSocketDisconnect:
         return
     except asyncio.TimeoutError:
+        print("LIVE_STREAM_START_TIMEOUT: no_start_frame_received_within_10s", flush=True)
         try:
             await websocket.close(code=1008, reason="session_start_timeout")
         except Exception:
