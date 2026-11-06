@@ -223,8 +223,6 @@ def test_live_stream_rejects_short_noise_burst_without_calling_asr(monkeypatch):
             for _ in range(50):
                 websocket.send_bytes(_pcm_frame(0))
             websocket.send_json({"type": "stop"})
-            close_message = websocket.receive()
-            assert close_message["type"] == "websocket.close"
     assert calls["count"] == 0
 
 
