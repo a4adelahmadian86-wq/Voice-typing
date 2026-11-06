@@ -35,9 +35,8 @@ MAX_AUDIO_BYTES = max(1024, int(os.getenv("FARAST_MAX_AUDIO_BYTES", str(15 * 102
 MAX_TEXT_CHARS = max(1, int(os.getenv("FARAST_MAX_TEXT_CHARS", "1200")))
 GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 PERSIAN_ASR_PROMPT = (
-    "این گفتار فارسی ایران و معمولاً محاوره‌ای است. واژه‌ها و جمله‌ها را دقیقاً همان‌طور که شنیده می‌شوند بنویس؛ "
-    "متن را ترجمه یا خلاصه نکن. نام‌ها و اصطلاحات زمینه‌ای ممکن است شامل فراست، دستیار صوتی، تایپ، ویرایشگر، "
-    "گفت‌وگوی زنده و میکروفون باشند."
+    "گفتار فارسی محاوره‌ای ایران است؛ فقط واژه‌هایی را بنویس که واقعاً در صدا شنیده می‌شوند. "
+    "صدای غیرگفتاری یا سکوت را به متن تبدیل نکن."
 )
 
 app = FastAPI(title=APP_NAME, version="0.2.0")
@@ -336,6 +335,9 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
         raise RuntimeError("asr_not_configured")
     language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
     normalized_pcm, gain, speech_rms = normalize_speech_pcm(pcm)
+    if speech_rms < 0.002:
+        print("LIVE_ASR_REJECTED: insufficient_speech_energy", flush=True)
+        return ""
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as audio_file:
         audio_file.setnchannels(1)
@@ -352,7 +354,8 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
                 data={
                     "model": GROQ_ASR_MODEL,
                     "language": language,
-                    "response_format": "json",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
                     "temperature": "0",
                     **({"prompt": PERSIAN_ASR_PROMPT} if locale == "fa-IR" else {}),
                 },
@@ -371,11 +374,40 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
         print(f"LIVE_ASR_FAILED: model={GROQ_ASR_MODEL} status={response.status_code} elapsed_ms={elapsed_ms}", flush=True)
         raise RuntimeError("asr_provider_failed")
 
-    transcript = str(response.json().get("text", "")).strip()
+    result = response.json()
+    segments = result.get("segments")
+    if not isinstance(segments, list) or not segments:
+        print(
+            f"LIVE_ASR_REJECTED: model={GROQ_ASR_MODEL} reason=no_segments "
+            f"elapsed_ms={elapsed_ms} speech_rms={speech_rms:.4f}",
+            flush=True,
+        )
+        return ""
+
+    accepted_segments = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        no_speech_prob = float(segment.get("no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(segment.get("avg_logprob", 0.0) or 0.0)
+        segment_text = str(segment.get("text", "")).strip()
+        if segment_text and no_speech_prob < 0.65 and avg_logprob > -1.0:
+            accepted_segments.append(segment_text)
+
+    if not accepted_segments:
+        print(
+            f"LIVE_ASR_REJECTED: model={GROQ_ASR_MODEL} reason=low_speech_confidence "
+            f"elapsed_ms={elapsed_ms} speech_rms={speech_rms:.4f}",
+            flush=True,
+        )
+        return ""
+
+    transcript = " ".join(accepted_segments).strip()
     duration_ms = int(len(pcm) * 1000 / 32000)
     print(
         f"LIVE_ASR_OK: model={GROQ_ASR_MODEL} locale={locale} duration_ms={duration_ms} "
-        f"latency_ms={elapsed_ms} speech_rms={speech_rms:.4f} gain={gain:.2f} chars={len(transcript)}",
+        f"latency_ms={elapsed_ms} speech_rms={speech_rms:.4f} gain={gain:.2f} "
+        f"segments={len(accepted_segments)} chars={len(transcript)}",
         flush=True,
     )
     return transcript
@@ -418,7 +450,8 @@ async def live_stream(websocket: WebSocket):
         end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "1000")) // 20))
         preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
-        min_utterance_frames = 12
+        min_utterance_frames = 20
+        min_voiced_frames = 12
         noise_floor = 35.0
         calibration_levels = []
         calibration_frame_count = 10  # 200 ms; keep these frames in pre-roll.
@@ -427,17 +460,25 @@ async def live_stream(websocket: WebSocket):
         utterance = []
         speech_active = False
         silence_frames = 0
+        voiced_frames = 0
         utterance_id = 0
         pending = bytearray()
 
         async def finish_utterance(reason: str):
-            nonlocal utterance, speech_active, silence_frames, candidate, utterance_id
+            nonlocal utterance, speech_active, silence_frames, candidate, voiced_frames, utterance_id
             frames = utterance
+            active_frames = voiced_frames
             utterance = []
             speech_active = False
             silence_frames = 0
+            voiced_frames = 0
             candidate = []
-            if len(frames) < min_utterance_frames:
+            if len(frames) < min_utterance_frames or active_frames < min_voiced_frames:
+                print(
+                    f"LIVE_VAD_REJECTED: reason=insufficient_voiced_frames "
+                    f"frames={len(frames)} voiced_frames={active_frames}",
+                    flush=True,
+                )
                 return
             utterance_id += 1
             raw_pcm = b"".join(frames)
@@ -505,14 +546,16 @@ async def live_stream(websocket: WebSocket):
                         speech_pair = next(
                             (
                                 index
-                                for index in range(len(calibration_levels) - 1)
+                                for index in range(len(calibration_levels) - 2)
                                 if calibration_levels[index] >= calibration_threshold
                                 and calibration_levels[index + 1] >= calibration_threshold
+                                and calibration_levels[index + 2] >= calibration_threshold
                             ),
                             None,
                         )
                         if speech_pair is not None:
                             speech_active = True
+                            voiced_frames = sum(1 for level in calibration_levels if level >= calibration_threshold)
                             utterance = list(pre_roll)
                             pre_roll.clear()
                             last_active = max(
@@ -541,6 +584,7 @@ async def live_stream(websocket: WebSocket):
 
                     speech_active = True
                     utterance = list(pre_roll) + candidate
+                    voiced_frames = len(candidate)
                     pre_roll.clear()
                     candidate = []
                     silence_frames = 0
@@ -549,6 +593,7 @@ async def live_stream(websocket: WebSocket):
 
                 utterance.append(frame)
                 if rms >= threshold:
+                    voiced_frames += 1
                     silence_frames = 0
                 else:
                     silence_frames += 1
