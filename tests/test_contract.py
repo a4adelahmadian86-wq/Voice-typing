@@ -199,6 +199,34 @@ def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monk
 
 
 
+def test_live_stream_rejects_short_noise_burst_without_calling_asr(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_transcription(pcm, locale):
+        calls["count"] += 1
+        return "نباید تولید شود"
+
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr(main, "transcribe_live_utterance", fake_transcription)
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/v1/stream") as websocket:
+            websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
+            assert websocket.receive_json()["type"] == "ready"
+            # A short burst can trip the initial VAD candidate, but must not
+            # satisfy the minimum sustained voiced-frame requirement.
+            for _ in range(4):
+                websocket.send_bytes(_pcm_frame(5000))
+            for _ in range(6):
+                websocket.send_bytes(_pcm_frame(0))
+            assert websocket.receive_json()["type"] == "speech_started"
+            for _ in range(50):
+                websocket.send_bytes(_pcm_frame(0))
+            websocket.send_json({"type": "stop"})
+            close_message = websocket.receive()
+            assert close_message["type"] == "websocket.close"
+    assert calls["count"] == 0
+
+
 def test_live_transcription_sends_persian_context_prompt(monkeypatch):
     captured = {}
 
