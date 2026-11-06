@@ -272,7 +272,8 @@ def test_live_transcription_sends_persian_context_prompt(monkeypatch):
     assert captured["data"]["language"] == "fa"
     assert captured["data"]["temperature"] == "0"
     assert "محاوره‌ای" in captured["data"]["prompt"]
-    assert "فراست" in captured["data"]["prompt"]
+    assert "سکوت" in captured["data"]["prompt"]
+    assert "فراست" not in captured["data"]["prompt"]
     assert captured["filename"] == "farast-utterance.wav"
     assert captured["content_type"] == "audio/wav"
     assert captured["data"]["response_format"] == "verbose_json"
