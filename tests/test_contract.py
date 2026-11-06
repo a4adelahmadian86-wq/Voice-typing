@@ -29,6 +29,9 @@ def test_status_accepts_bearer_token():
     assert response.status_code == 200
     assert response.json()["voice_id"] == main.VOICE_ID
     assert response.json()["asr_provider"] == "groq"
+    assert response.json()["asr_ready"] is True
+    assert response.json()["tts_ready"] is True
+    assert response.json()["chat_ready"] is True
 
 
 def test_wrong_voice_is_rejected():
