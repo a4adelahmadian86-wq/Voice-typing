@@ -30,7 +30,7 @@ def estimate_noise_floor(levels: list[float]) -> float:
 
 def speech_threshold(noise_floor: float) -> float:
     """Conservative adaptive threshold in PCM16 units."""
-    return max(95.0, min(900.0, float(noise_floor) * 1.8))
+    return max(140.0, min(1100.0, float(noise_floor) * 2.2))
 
 
 def normalize_speech_pcm(
