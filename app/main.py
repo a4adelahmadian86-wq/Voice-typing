@@ -332,10 +332,10 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
 
 async def has_repeated_adjacent_sentence(text: str) -> bool:
     """Reject a common Whisper hallucination pattern: the same sentence repeated back-to-back."""
-    sentences = re.split(r"(?<=[.!?؟۔])\\s+", str(text or "").strip())
+    sentences = re.split(r"(?<=[.!?؟۔])\s+", str(text or "").strip())
     normalized = []
     for sentence in sentences:
-        words = re.findall(r"[\\w]+", sentence.casefold(), flags=re.UNICODE)
+        words = re.findall(r"[\w]+", sentence.casefold(), flags=re.UNICODE)
         if len(words) >= 3:
             normalized.append(tuple(words))
     return any(left == right for left, right in zip(normalized, normalized[1:]))
