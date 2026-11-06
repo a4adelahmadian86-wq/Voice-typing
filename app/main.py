@@ -7,6 +7,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import time
 import wave
@@ -260,7 +261,7 @@ async def synthesize_mp3(text: str) -> bytes:
     retry_delays = (0.5, 1.25)
     for attempt in range(3):
         try:
-            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE, rate="-4%")
+            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
             chunks: list[bytes] = []
             async for chunk in communicate.stream():
                 if chunk.get("type") == "audio" and chunk.get("data"):
@@ -329,7 +330,18 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
     return payload
 
 
-async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
+async def has_repeated_adjacent_sentence(text: str) -> bool:
+    """Reject a common Whisper hallucination pattern: the same sentence repeated back-to-back."""
+    sentences = re.split(r"(?<=[.!?؟۔])\\s+", str(text or "").strip())
+    normalized = []
+    for sentence in sentences:
+        words = re.findall(r"[\\w]+", sentence.casefold(), flags=re.UNICODE)
+        if len(words) >= 3:
+            normalized.append(tuple(words))
+    return any(left == right for left, right in zip(normalized, normalized[1:]))
+
+
+def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
     """Transcribe one endpointed 16 kHz mono PCM utterance using server-side Groq Whisper."""
     if not GROQ_API_KEY:
         raise RuntimeError("asr_not_configured")
@@ -414,6 +426,13 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
         return ""
 
     transcript = " ".join(accepted_segments).strip()
+    if has_repeated_adjacent_sentence(transcript):
+        print(
+            f"LIVE_ASR_REJECTED: model={GROQ_ASR_MODEL} reason=repeated_adjacent_sentence "
+            f"elapsed_ms={elapsed_ms} speech_rms={speech_rms:.4f}",
+            flush=True,
+        )
+        return ""
     duration_ms = int(len(pcm) * 1000 / 32000)
     print(
         f"LIVE_ASR_OK: model={GROQ_ASR_MODEL} locale={locale} duration_ms={duration_ms} "
