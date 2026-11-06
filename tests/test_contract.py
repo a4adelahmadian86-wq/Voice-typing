@@ -323,6 +323,42 @@ def test_live_transcription_rejects_low_confidence_non_speech(monkeypatch):
     assert transcript == ""
 
 
+
+def test_live_transcription_rejects_plausible_sentence_from_ambiguous_audio(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {
+                "text": "از اینجا باید برداری کنید",
+                "segments": [{
+                    "text": " از اینجا باید برداری کنید",
+                    "no_speech_prob": 0.42,
+                    "avg_logprob": -0.15,
+                    "compression_ratio": 1.2,
+                }],
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, data, files):
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    transcript = asyncio.run(main.transcribe_live_utterance(_pcm_frame(5000) * 30, "fa-IR"))
+    assert transcript == ""
+
+
 def test_health_allows_cross_origin_render_wake_probe():
     response = TestClient(main.app).get(
         "/health",
