@@ -256,7 +256,7 @@ def test_live_transcription_rejects_silence_before_calling_provider(monkeypatch)
         raise AssertionError("ASR provider must not be called for silence")
 
     monkeypatch.setattr(main.httpx, "AsyncClient", unexpected_client)
-    transcript = asyncio.run(main.transcribe_live_utterance(b"\\x00" * 6400, "fa-IR"))
+    transcript = asyncio.run(main.transcribe_live_utterance(b"\x00" * 6400, "fa-IR"))
     assert transcript == ""
 
 
