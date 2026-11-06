@@ -117,6 +117,7 @@ def status() -> dict:
     return {
         "asr_ready": bool(GROQ_API_KEY),
         "tts_ready": bool(EDGE_TTS_VOICE),
+        "chat_ready": bool(GROQ_API_KEY and GROQ_CHAT_MODEL and AI_API_TOKEN),
         "voice_id": VOICE_ID,
         "asr_provider": "groq",
         "tts_provider": "microsoft-edge-tts",
