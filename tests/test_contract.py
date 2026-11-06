@@ -95,10 +95,9 @@ def test_synthesize_mp3_retries_transient_provider_failures(monkeypatch):
     calls = {"count": 0}
 
     class FakeCommunicate:
-        def __init__(self, text, voice, rate):
+        def __init__(self, text, voice):
             assert text == "سلام"
             assert voice == main.EDGE_TTS_VOICE
-            assert rate == "-4%"
 
         async def stream(self):
             calls["count"] += 1
@@ -367,3 +366,40 @@ def test_health_allows_cross_origin_render_wake_probe():
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "*"
     assert response.headers["cache-control"] == "no-store"
+
+def test_live_transcription_rejects_repeated_hallucinated_sentence(monkeypatch):
+    repeated = "همینطور که این تصویر برنامه باید برگردیم. این تصویر باید برگردیم. این تصویر باید برگردیم."
+
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {
+                "text": repeated,
+                "segments": [{
+                    "text": repeated,
+                    "no_speech_prob": 0.05,
+                    "avg_logprob": -0.2,
+                    "compression_ratio": 1.2,
+                }],
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, data, files):
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    transcript = asyncio.run(main.transcribe_live_utterance(_pcm_frame(5000) * 30, "fa-IR"))
+    assert transcript == ""
+
