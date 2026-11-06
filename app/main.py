@@ -260,7 +260,7 @@ async def synthesize_mp3(text: str) -> bytes:
     retry_delays = (0.5, 1.25)
     for attempt in range(3):
         try:
-            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
+            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE, rate="-4%")
             chunks: list[bytes] = []
             async for chunk in communicate.stream():
                 if chunk.get("type") == "audio" and chunk.get("data"):
