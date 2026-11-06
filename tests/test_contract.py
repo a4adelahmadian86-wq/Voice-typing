@@ -180,12 +180,12 @@ def test_live_stream_detects_silence_endpoint_and_transcribes_complete_turn(monk
         with client.websocket_connect("/v1/stream") as websocket:
             websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
             assert websocket.receive_json()["type"] == "ready"
-            for _ in range(4):
+            for _ in range(10):
                 websocket.send_bytes(_pcm_frame(5000))
-            # Keep the microphone stream continuous while the first 200 ms of
-            # audio is calibrated; the initial speech must survive in pre-roll.
+            # The first 200 ms are retained for calibration; sustained speech
+            # must survive in pre-roll and meet the active-frame minimum.
             for _ in range(6):
-                websocket.send_bytes(_pcm_frame(0))
+                websocket.send_bytes(_pcm_frame(5000))
             assert websocket.receive_json()["type"] == "speech_started"
             for _ in range(59):
                 websocket.send_bytes(_pcm_frame(0))
@@ -208,7 +208,15 @@ def test_live_transcription_sends_persian_context_prompt(monkeypatch):
 
         @staticmethod
         def json():
-            return {"text": "سلام، فراست"}
+            return {
+                "text": "سلام، فراست",
+                "segments": [{
+                    "text": " سلام، فراست",
+                    "no_speech_prob": 0.02,
+                    "avg_logprob": -0.2,
+                    "compression_ratio": 1.1,
+                }],
+            }
 
     class FakeClient:
         def __init__(self, timeout):
@@ -239,6 +247,52 @@ def test_live_transcription_sends_persian_context_prompt(monkeypatch):
     assert "فراست" in captured["data"]["prompt"]
     assert captured["filename"] == "farast-utterance.wav"
     assert captured["content_type"] == "audio/wav"
+    assert captured["data"]["response_format"] == "verbose_json"
+    assert captured["data"]["timestamp_granularities[]"] == "segment"
+
+
+def test_live_transcription_rejects_silence_before_calling_provider(monkeypatch):
+    async def unexpected_client(*args, **kwargs):
+        raise AssertionError("ASR provider must not be called for silence")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", unexpected_client)
+    transcript = asyncio.run(main.transcribe_live_utterance(b"\\x00" * 6400, "fa-IR"))
+    assert transcript == ""
+
+
+def test_live_transcription_rejects_low_confidence_non_speech(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {
+                "text": "موسیقی",
+                "segments": [{
+                    "text": " موسیقی",
+                    "no_speech_prob": 0.98,
+                    "avg_logprob": -0.2,
+                }],
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, data, files):
+            assert data["response_format"] == "verbose_json"
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    transcript = asyncio.run(main.transcribe_live_utterance(_pcm_frame(5000) * 30, "fa-IR"))
+    assert transcript == ""
 
 
 def test_health_allows_cross_origin_render_wake_probe():
