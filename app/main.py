@@ -330,7 +330,7 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
     return payload
 
 
-async def has_repeated_adjacent_sentence(text: str) -> bool:
+def has_repeated_adjacent_sentence(text: str) -> bool:
     """Reject a common Whisper hallucination pattern: the same sentence repeated back-to-back."""
     sentences = re.split(r"(?<=[.!?؟۔])\s+", str(text or "").strip())
     normalized = []
@@ -341,7 +341,7 @@ async def has_repeated_adjacent_sentence(text: str) -> bool:
     return any(left == right for left, right in zip(normalized, normalized[1:]))
 
 
-def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
+async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
     """Transcribe one endpointed 16 kHz mono PCM utterance using server-side Groq Whisper."""
     if not GROQ_API_KEY:
         raise RuntimeError("asr_not_configured")
