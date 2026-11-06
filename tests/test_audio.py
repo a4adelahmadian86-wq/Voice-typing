@@ -15,9 +15,10 @@ class AudioHelpersTests(unittest.TestCase):
     def test_noise_floor_uses_quieter_half_to_reject_transient_peaks(self):
         self.assertAlmostEqual(estimate_noise_floor([40, 42, 39, 41, 1500, 1800]), 40.0)
 
-    def test_speech_threshold_has_floor_and_tracks_noise(self):
-        self.assertEqual(speech_threshold(25), 95.0)
-        self.assertAlmostEqual(speech_threshold(65), 117.0)
+    def test_speech_threshold_is_conservative_and_tracks_noise(self):
+        self.assertEqual(speech_threshold(25), 140.0)
+        self.assertEqual(speech_threshold(65), 143.0)
+        self.assertAlmostEqual(speech_threshold(100), 220.0)
 
     def test_normalization_lifts_quiet_speech_without_clipping(self):
         pcm = struct.pack("<640h", *([500] * 640))
