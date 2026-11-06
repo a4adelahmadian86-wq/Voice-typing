@@ -335,7 +335,7 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
         raise RuntimeError("asr_not_configured")
     language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
     normalized_pcm, gain, speech_rms = normalize_speech_pcm(pcm)
-    if speech_rms < 0.002:
+    if speech_rms < 0.004:
         print("LIVE_ASR_REJECTED: insufficient_speech_energy", flush=True)
         return ""
     wav_buffer = io.BytesIO()
@@ -388,10 +388,21 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
     for segment in segments:
         if not isinstance(segment, dict):
             continue
-        no_speech_prob = float(segment.get("no_speech_prob", 0.0) or 0.0)
-        avg_logprob = float(segment.get("avg_logprob", 0.0) or 0.0)
+        try:
+            # Fail closed when Whisper omits confidence metadata. A plausible-looking
+            # sentence is not enough to accept audio that may only be room noise.
+            no_speech_prob = float(segment.get("no_speech_prob", 1.0))
+            avg_logprob = float(segment.get("avg_logprob", -10.0))
+            compression_ratio = float(segment.get("compression_ratio", 99.0))
+        except (TypeError, ValueError):
+            continue
         segment_text = str(segment.get("text", "")).strip()
-        if segment_text and no_speech_prob < 0.65 and avg_logprob > -1.0:
+        if (
+            segment_text
+            and no_speech_prob <= 0.35
+            and avg_logprob > -0.7
+            and compression_ratio <= 2.4
+        ):
             accepted_segments.append(segment_text)
 
     if not accepted_segments:
@@ -450,8 +461,8 @@ async def live_stream(websocket: WebSocket):
         end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "750")) // 20))
         preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
-        min_utterance_frames = 20
-        min_voiced_frames = 12
+        min_utterance_frames = 25
+        min_voiced_frames = 16
         noise_floor = 35.0
         calibration_levels = []
         calibration_frame_count = 10  # 200 ms; keep these frames in pre-roll.
