@@ -587,7 +587,7 @@ async def live_stream(websocket: WebSocket):
             if not data:
                 continue
             if len(data) > 24000:
-                await websocket.send_json({"type": "error", "code": "audio_frame_too_large"})
+                await send_event({"type": "error", "code": "audio_frame_too_large"})
                 continue
             pending.extend(data)
             usable = len(pending) - (len(pending) % frame_bytes)
@@ -630,7 +630,7 @@ async def live_stream(websocket: WebSocket):
                                 if level >= calibration_threshold
                             )
                             silence_frames = len(calibration_levels) - last_active - 1
-                            await websocket.send_json({"type": "speech_started"})
+                            await send_event({"type": "speech_started"})
                     continue
 
                 threshold = speech_threshold(noise_floor)
@@ -654,7 +654,7 @@ async def live_stream(websocket: WebSocket):
                     pre_roll.clear()
                     candidate = []
                     silence_frames = 0
-                    await websocket.send_json({"type": "speech_started"})
+                    await send_event({"type": "speech_started"})
                     continue
 
                 utterance.append(frame)
