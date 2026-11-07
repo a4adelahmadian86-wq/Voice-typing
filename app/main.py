@@ -571,7 +571,7 @@ async def live_stream(websocket: WebSocket):
                 frames,
                 speech_threshold(noise_floor),
                 pre_roll_frames=5,
-                post_roll_frames=3,
+                post_roll_frames=5,
             )
             raw_pcm = b"".join(trimmed_frames)
             duration_ms = int(len(trimmed_frames) * 20)
