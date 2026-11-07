@@ -225,6 +225,46 @@ def test_live_stream_rejects_short_noise_burst_without_calling_asr(monkeypatch):
     assert calls["count"] == 0
 
 
+def test_live_stream_can_flush_and_resume_without_reopening_the_socket(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_transcription(pcm, locale):
+        calls["count"] += 1
+        assert locale == "fa-IR"
+        assert len(pcm) >= 640 * 10
+        return "سلام فراست"
+
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr(main, "transcribe_live_utterance", fake_transcription)
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/v1/stream") as websocket:
+            websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
+            assert websocket.receive_json()["type"] == "ready"
+
+            for _ in range(10):
+                websocket.send_bytes(_pcm_frame(0))
+            for _ in range(20):
+                websocket.send_bytes(_pcm_frame(5000))
+            assert websocket.receive_json()["type"] == "speech_started"
+            websocket.send_json({"type": "end_utterance"})
+            assert websocket.receive_json()["type"] == "processing"
+            first_final = websocket.receive_json()
+            assert first_final["type"] == "final"
+            assert first_final["endpoint_reason"] == "user_stop"
+
+            # A second capture can reuse the same authenticated WebSocket session.
+            for _ in range(20):
+                websocket.send_bytes(_pcm_frame(5000))
+            assert websocket.receive_json()["type"] == "speech_started"
+            websocket.send_json({"type": "end_utterance"})
+            assert websocket.receive_json()["type"] == "processing"
+            second_final = websocket.receive_json()
+            assert second_final["type"] == "final"
+            assert second_final["text"] == "سلام فراست"
+            assert calls["count"] == 2
+            websocket.send_json({"type": "stop"})
+
+
 def test_live_transcription_sends_persian_context_prompt(monkeypatch):
     captured = {}
 
