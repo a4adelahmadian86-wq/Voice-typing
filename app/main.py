@@ -21,7 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms, speech_threshold
+from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms, speech_threshold, trim_speech_frames
 
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
@@ -451,6 +451,7 @@ async def live_stream(websocket: WebSocket):
     voice activity detection and submits only complete utterances after end-of-speech.
     """
     await websocket.accept()
+    asr_worker = None
     try:
         start = await asyncio.wait_for(websocket.receive_json(), timeout=10)
         token = str(start.get("token", "")) if isinstance(start, dict) else ""
@@ -477,11 +478,11 @@ async def live_stream(websocket: WebSocket):
         })
 
         frame_bytes = 640  # 20 ms, mono, signed 16-bit, 16 kHz.
-        end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "750")) // 20))
+        end_silence_frames = max(20, min(75, int(os.getenv("FARAST_VAD_END_SILENCE_MS", "600")) // 20))
         preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
-        min_utterance_frames = 25
-        min_voiced_frames = 16
+        min_utterance_frames = 15
+        min_voiced_frames = 8
         noise_floor = 35.0
         calibration_levels = []
         calibration_frame_count = 10  # 200 ms; keep these frames in pre-roll.
@@ -493,6 +494,40 @@ async def live_stream(websocket: WebSocket):
         voiced_frames = 0
         utterance_id = 0
         pending = bytearray()
+        asr_queue: asyncio.Queue = asyncio.Queue()
+        send_lock = asyncio.Lock()
+
+        async def send_event(payload: dict) -> None:
+            async with send_lock:
+                await websocket.send_json(payload)
+
+        async def process_asr_queue() -> None:
+            while True:
+                item = await asr_queue.get()
+                try:
+                    raw_pcm, turn_id, duration_ms, reason = item
+                    try:
+                        transcript = await transcribe_live_utterance(raw_pcm, locale)
+                    except Exception as exc:
+                        code = str(exc) if str(exc) in {"asr_rate_limited", "asr_not_configured"} else "asr_provider_failed"
+                        await send_event({"type": "provider_error", "code": code, "turn_id": turn_id})
+                        continue
+                    if transcript:
+                        await send_event({
+                            "type": "final",
+                            "text": transcript,
+                            "turn_id": turn_id,
+                            "duration_ms": duration_ms,
+                            "endpoint_reason": reason,
+                        })
+                    else:
+                        await send_event({"type": "empty", "turn_id": turn_id})
+                except (WebSocketDisconnect, RuntimeError):
+                    return
+                finally:
+                    asr_queue.task_done()
+
+        asr_worker = asyncio.create_task(process_asr_queue())
 
         async def finish_utterance(reason: str):
             nonlocal utterance, speech_active, silence_frames, candidate, voiced_frames, utterance_id
@@ -511,25 +546,18 @@ async def live_stream(websocket: WebSocket):
                 )
                 return
             utterance_id += 1
-            raw_pcm = b"".join(frames)
-            duration_ms = int(len(frames) * 20)
-            await websocket.send_json({"type": "processing", "turn_id": utterance_id, "duration_ms": duration_ms})
-            try:
-                transcript = await transcribe_live_utterance(raw_pcm, locale)
-            except Exception as exc:
-                code = str(exc) if str(exc) in {"asr_rate_limited", "asr_not_configured"} else "asr_provider_failed"
-                await websocket.send_json({"type": "provider_error", "code": code, "turn_id": utterance_id})
-                return
-            if transcript:
-                await websocket.send_json({
-                    "type": "final",
-                    "text": transcript,
-                    "turn_id": utterance_id,
-                    "duration_ms": duration_ms,
-                    "endpoint_reason": reason,
-                })
-            else:
-                await websocket.send_json({"type": "empty", "turn_id": utterance_id})
+            trimmed_frames = trim_speech_frames(
+                frames,
+                speech_threshold(noise_floor),
+                pre_roll_frames=5,
+                post_roll_frames=3,
+            )
+            raw_pcm = b"".join(trimmed_frames)
+            duration_ms = int(len(trimmed_frames) * 20)
+            await send_event({"type": "processing", "turn_id": utterance_id, "duration_ms": duration_ms})
+            # Keep reading incoming audio while the external ASR request is in flight.
+            # This prevents a slow transcription from blocking the next user utterance.
+            await asr_queue.put((raw_pcm, utterance_id, duration_ms, reason))
 
         while True:
             message = await websocket.receive()
@@ -541,9 +569,17 @@ async def live_stream(websocket: WebSocket):
                     command = json.loads(message["text"])
                 except (TypeError, ValueError):
                     continue
+                if command.get("type") == "end_utterance":
+                    if speech_active:
+                        await finish_utterance("user_stop")
+                    else:
+                        candidate.clear()
+                        pre_roll.clear()
+                    continue
                 if command.get("type") == "stop":
                     if speech_active:
                         await finish_utterance("session_stop")
+                    await asr_queue.join()
                     break
                 continue
 
@@ -648,3 +684,10 @@ async def live_stream(websocket: WebSocket):
             await websocket.close(code=1011)
         except Exception:
             pass
+    finally:
+        if asr_worker is not None and not asr_worker.done():
+            asr_worker.cancel()
+            try:
+                await asr_worker
+            except asyncio.CancelledError:
+                pass
