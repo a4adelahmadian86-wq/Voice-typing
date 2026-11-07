@@ -371,8 +371,14 @@ async def transcribe_live_utterance(pcm: bytes, locale: str) -> str:
         raise RuntimeError("asr_not_configured")
     language = {"fa-IR": "fa", "en-US": "en", "ar-SA": "ar"}[locale]
     normalized_pcm, gain, speech_rms = normalize_speech_pcm(pcm)
-    if speech_rms < 0.004:
-        print("LIVE_ASR_REJECTED: insufficient_speech_energy", flush=True)
+    # Whisper can invent fluent Persian text from low-level room noise. The
+    # live VAD is only a first gate; require a minimally credible original
+    # signal level before normalization or any external ASR request.
+    if speech_rms < 0.01:
+        print(
+            f"LIVE_ASR_REJECTED: reason=insufficient_speech_energy speech_rms={speech_rms:.4f}",
+            flush=True,
+        )
         return ""
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as audio_file:
@@ -506,7 +512,7 @@ async def live_stream(websocket: WebSocket):
         preroll_frames = max(10, min(50, int(os.getenv("FARAST_VAD_PREROLL_MS", "500")) // 20))
         max_utterance_frames = max(150, min(1500, int(os.getenv("FARAST_VAD_MAX_UTTERANCE_MS", "20000")) // 20))
         min_utterance_frames = 15
-        min_voiced_frames = 8
+        min_voiced_frames = 12
         noise_floor = 35.0
         calibration_levels = []
         calibration_frame_count = 10  # 200 ms; keep these frames in pre-roll.
@@ -520,6 +526,9 @@ async def live_stream(websocket: WebSocket):
         pending = bytearray()
         asr_queue: asyncio.Queue = asyncio.Queue()
         send_lock = asyncio.Lock()
+        # Incremented whenever capture is paused. Any in-flight ASR result from
+        # an earlier capture epoch is discarded instead of reaching the browser.
+        capture_epoch = 0
 
         async def send_event(payload: dict) -> None:
             async with send_lock:
@@ -529,12 +538,20 @@ async def live_stream(websocket: WebSocket):
             while True:
                 item = await asr_queue.get()
                 try:
-                    raw_pcm, turn_id, duration_ms, reason = item
+                    raw_pcm, turn_id, duration_ms, reason, queued_epoch = item
+                    if queued_epoch != capture_epoch:
+                        continue
                     try:
                         transcript = await transcribe_live_utterance(raw_pcm, locale)
                     except Exception as exc:
+                        if queued_epoch != capture_epoch:
+                            continue
                         code = str(exc) if str(exc) in {"asr_rate_limited", "asr_not_configured"} else "asr_provider_failed"
                         await send_event({"type": "provider_error", "code": code, "turn_id": turn_id})
+                        continue
+                    # The user may have muted capture while the provider request
+                    # was in flight. Never publish stale text after that point.
+                    if queued_epoch != capture_epoch:
                         continue
                     if transcript:
                         await send_event({
@@ -581,7 +598,7 @@ async def live_stream(websocket: WebSocket):
             await send_event({"type": "processing", "turn_id": utterance_id, "duration_ms": duration_ms})
             # Keep reading incoming audio while the external ASR request is in flight.
             # This prevents a slow transcription from blocking the next user utterance.
-            await asr_queue.put((raw_pcm, utterance_id, duration_ms, reason))
+            await asr_queue.put((raw_pcm, utterance_id, duration_ms, reason, capture_epoch))
 
         while True:
             message = await websocket.receive()
@@ -599,6 +616,25 @@ async def live_stream(websocket: WebSocket):
                     else:
                         candidate.clear()
                         pre_roll.clear()
+                    continue
+                if command.get("type") == "pause_capture":
+                    # Muting the microphone is not an utterance boundary: discard
+                    # partial/noisy audio and invalidate ASR work already in flight.
+                    capture_epoch += 1
+                    candidate.clear()
+                    pre_roll.clear()
+                    utterance = []
+                    speech_active = False
+                    silence_frames = 0
+                    voiced_frames = 0
+                    pending.clear()
+                    while True:
+                        try:
+                            asr_queue.get_nowait()
+                            asr_queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
+                    await send_event({"type": "capture_paused"})
                     continue
                 if command.get("type") == "stop":
                     if speech_active:

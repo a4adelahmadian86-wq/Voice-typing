@@ -225,6 +225,35 @@ def test_live_stream_rejects_short_noise_burst_without_calling_asr(monkeypatch):
     assert calls["count"] == 0
 
 
+def test_live_stream_pause_discards_partial_audio_without_transcribing(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_transcription(pcm, locale):
+        calls["count"] += 1
+        return "نباید تولید شود"
+
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr(main, "transcribe_live_utterance", fake_transcription)
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/v1/stream") as websocket:
+            websocket.send_json({"type": "start", "token": _live_token(), "locale": "fa-IR"})
+            assert websocket.receive_json()["type"] == "ready"
+            for _ in range(10):
+                websocket.send_bytes(_pcm_frame(0))
+            for _ in range(20):
+                websocket.send_bytes(_pcm_frame(5000))
+            assert websocket.receive_json()["type"] == "speech_started"
+
+            # Pausing capture is a discard operation, not a request to finalize
+            # whatever partial/noisy audio happened to be buffered.
+            websocket.send_json({"type": "pause_capture"})
+            assert websocket.receive_json()["type"] == "capture_paused"
+            for _ in range(60):
+                websocket.send_bytes(_pcm_frame(0))
+            websocket.send_json({"type": "stop"})
+    assert calls["count"] == 0
+
+
 def test_live_stream_can_flush_and_resume_without_reopening_the_socket(monkeypatch):
     calls = {"count": 0}
 
@@ -325,6 +354,16 @@ def test_live_transcription_rejects_silence_before_calling_provider(monkeypatch)
 
     monkeypatch.setattr(main.httpx, "AsyncClient", unexpected_client)
     transcript = asyncio.run(main.transcribe_live_utterance(b"\x00" * 6400, "fa-IR"))
+    assert transcript == ""
+
+def test_live_transcription_rejects_low_level_room_noise_before_calling_provider(monkeypatch):
+    async def unexpected_client(*args, **kwargs):
+        raise AssertionError("ASR provider must not be called for low-level noise")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", unexpected_client)
+    # A continuous low-level signal around the level seen in false live
+    # transcripts must be rejected before Whisper can hallucinate text.
+    transcript = asyncio.run(main.transcribe_live_utterance(_pcm_frame(400) * 30, "fa-IR"))
     assert transcript == ""
 
 
