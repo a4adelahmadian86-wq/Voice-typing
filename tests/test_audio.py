@@ -1,7 +1,7 @@
 import struct
 import unittest
 
-from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms, speech_threshold
+from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms, speech_threshold, trim_speech_frames
 
 
 class AudioHelpersTests(unittest.TestCase):
@@ -41,6 +41,21 @@ class AudioHelpersTests(unittest.TestCase):
         self.assertEqual(normalized, pcm)
         self.assertEqual(gain, 1.0)
         self.assertEqual(speech_rms, 0.0)
+
+    def test_trim_speech_frames_removes_long_silence_but_keeps_short_margins(self):
+        silence = struct.pack("<320h", *([0] * 320))
+        speech = struct.pack("<320h", *([3000] * 320))
+        frames = [silence] * 10 + [speech] * 20 + [silence] * 30
+        trimmed = trim_speech_frames(frames, threshold=1000, pre_roll_frames=2, post_roll_frames=3)
+        self.assertEqual(len(trimmed), 25)
+        self.assertEqual(trimmed[:2], [silence, silence])
+        self.assertEqual(trimmed[-3:], [silence, silence, silence])
+        self.assertTrue(all(frame == speech for frame in trimmed[2:-3]))
+
+    def test_trim_speech_frames_leaves_all_quiet_input_unchanged(self):
+        silence = struct.pack("<320h", *([0] * 320))
+        frames = [silence] * 12
+        self.assertEqual(trim_speech_frames(frames, threshold=1000), frames)
 
 
 if __name__ == "__main__":

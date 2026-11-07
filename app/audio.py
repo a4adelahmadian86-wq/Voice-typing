@@ -83,3 +83,27 @@ def normalize_speech_pcm(
         for value in samples
     )
     return struct.pack(f"<{sample_count}h", *normalized), gain, speech_rms
+
+
+
+def trim_speech_frames(
+    frames: list[bytes],
+    threshold: float,
+    *,
+    pre_roll_frames: int = 5,
+    post_roll_frames: int = 3,
+) -> list[bytes]:
+    """Remove long leading/trailing silence while preserving a short speech margin.
+
+    The live VAD already identifies active speech. Keeping only a small amount of
+    pre/post-roll reduces Whisper's opportunity to hallucinate words from silence
+    without clipping the beginning or ending consonants.
+    """
+    if not frames:
+        return []
+    active = [index for index, frame in enumerate(frames) if pcm_frame_rms(frame) >= threshold]
+    if not active:
+        return list(frames)
+    start = max(0, active[0] - max(0, pre_roll_frames))
+    end = min(len(frames), active[-1] + max(0, post_roll_frames) + 1)
+    return list(frames[start:end])
