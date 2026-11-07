@@ -147,10 +147,12 @@ async def chat_completions(request: ChatCompletionRequest, _auth: None = Depends
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Accept": "text/event-stream" if request.stream else "application/json"}
 
     if request.stream:
+        stream_started = time.perf_counter()
         client = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0))
         try:
             upstream_request = client.build_request("POST", GROQ_CHAT_URL, headers=headers, json=payload)
             upstream = await client.send(upstream_request, stream=True)
+            headers_ms = int((time.perf_counter() - stream_started) * 1000)
         except httpx.HTTPError as exc:
             await client.aclose()
             print(f"GROQ_CHAT_CONNECTION_FAILED: {type(exc).__name__}", flush=True)
@@ -163,11 +165,23 @@ async def chat_completions(request: ChatCompletionRequest, _auth: None = Depends
             raise HTTPException(status_code=429 if status_code == 429 else 502, detail="Chat provider rejected the request")
 
         async def relay_events():
+            first_chunk_ms = None
+            bytes_sent = 0
             try:
                 async for chunk in upstream.aiter_bytes():
                     if chunk:
+                        if first_chunk_ms is None:
+                            first_chunk_ms = int((time.perf_counter() - stream_started) * 1000)
+                        bytes_sent += len(chunk)
                         yield chunk
             finally:
+                total_ms = int((time.perf_counter() - stream_started) * 1000)
+                print(
+                    f"GROQ_CHAT_STREAM_METRICS: model={GROQ_CHAT_MODEL} headers_ms={headers_ms} "
+                    f"first_chunk_ms={first_chunk_ms if first_chunk_ms is not None else -1} "
+                    f"total_ms={total_ms} bytes={bytes_sent}",
+                    flush=True,
+                )
                 await upstream.aclose()
                 await client.aclose()
 
@@ -285,8 +299,15 @@ async def synthesize(request: SynthesizeRequest) -> Response:
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty")
+    started_at = time.perf_counter()
     try:
         audio = await asyncio.wait_for(synthesize_mp3(text), timeout=60)
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        print(
+            f"EDGE_TTS_OK: voice={EDGE_TTS_VOICE} chars={len(text)} "
+            f"latency_ms={latency_ms} audio_bytes={len(audio)}",
+            flush=True,
+        )
         return Response(
             content=audio,
             media_type="audio/mpeg",
