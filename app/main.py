@@ -26,6 +26,11 @@ from app.audio import estimate_noise_floor, normalize_speech_pcm, pcm_frame_rms,
 APP_NAME = "FARAST Free Voice Gateway"
 API_TOKEN = os.getenv("FARAST_VOICE_TOKEN", "").strip()
 AI_API_TOKEN = API_TOKEN
+
+
+def credential_fingerprint(value: str) -> str:
+    """Return a short, non-reversible diagnostic identifier; never log credentials."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else "empty"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -64,6 +69,13 @@ def authorize(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bear
     if not API_TOKEN:
         raise HTTPException(status_code=503, detail="Voice gateway is not configured")
     if credentials is None or not secrets.compare_digest(credentials.credentials, API_TOKEN):
+        received = credentials.credentials if credentials is not None else ""
+        print(
+            "VOICE_AUTH_REJECTED: "
+            f"configured_fingerprint={credential_fingerprint(API_TOKEN)} "
+            f"received_fingerprint={credential_fingerprint(received)}",
+            flush=True,
+        )
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -334,6 +346,13 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
     encoded, signature = token.split(".", 1)
     expected = hmac.new(API_TOKEN.encode(), encoded.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
+        print(
+            "LIVE_SESSION_SIGNATURE_MISMATCH: "
+            f"configured_key_fingerprint={credential_fingerprint(API_TOKEN)} "
+            f"expected_signature_fingerprint={credential_fingerprint(expected)} "
+            f"received_signature_fingerprint={credential_fingerprint(signature)}",
+            flush=True,
+        )
         return None
     try:
         padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
