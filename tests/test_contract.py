@@ -120,18 +120,19 @@ def test_looks_like_mp3_rejects_non_audio_payload():
     assert main.looks_like_mp3(b"\x00" * 4096) is False
 
 
-def _live_token(locale="fa-IR", uid=42, lifetime=120):
+def _live_token(locale="fa-IR", uid=42, lifetime=600, issued_at_offset=0):
     import base64
     import hashlib
     import hmac
     import json
     import time
 
+    now = int(time.time()) + issued_at_offset
     payload = {
         "uid": uid,
         "locale": locale,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + lifetime,
+        "iat": now,
+        "exp": now + lifetime,
         "nonce": "test-session-nonce",
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
@@ -154,6 +155,14 @@ def test_live_session_token_is_verified_without_laravel_callback():
     assert payload["locale"] == "fa-IR"
     assert main.verify_live_session_token(token, "en-US") is None
     assert main.verify_live_session_token(token + "bad", "fa-IR") is None
+
+
+def test_live_session_token_tolerates_small_clock_skew_but_rejects_expired_tokens():
+    ahead_token = _live_token(issued_at_offset=240)
+    assert main.verify_live_session_token(ahead_token, "fa-IR") is not None
+
+    expired_token = _live_token(lifetime=1, issued_at_offset=-1000)
+    assert main.verify_live_session_token(expired_token, "fa-IR") is None
 
 
 def test_live_stream_accepts_signed_session_without_laravel_url(monkeypatch):
