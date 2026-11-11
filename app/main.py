@@ -341,7 +341,9 @@ async def synthesize(request: SynthesizeRequest) -> Response:
 
 def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
     """Verify a short-lived Laravel-issued session token without calling back to Laravel."""
+    clock_skew_seconds = 300
     if not API_TOKEN or not token or "." not in token:
+        print("LIVE_SESSION_REJECTED: reason=missing_token_or_gateway_key", flush=True)
         return None
     encoded, signature = token.split(".", 1)
     expected = hmac.new(API_TOKEN.encode(), encoded.encode(), hashlib.sha256).hexdigest()
@@ -358,17 +360,37 @@ def verify_live_session_token(token: str, locale: str) -> Optional[dict]:
         padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        print("LIVE_SESSION_REJECTED: reason=malformed_payload", flush=True)
         return None
     now = int(time.time())
-    if (
-        not isinstance(payload, dict)
-        or int(payload.get("uid", 0) or 0) < 1
-        or payload.get("locale") != locale
-        or locale not in {"fa-IR", "en-US", "ar-SA"}
-        or int(payload.get("exp", 0) or 0) < now
-        or int(payload.get("iat", now + 1) or 0) > now + 30
-        or not payload.get("nonce")
-    ):
+    if not isinstance(payload, dict):
+        reason = "payload_not_object"
+    else:
+        try:
+            uid = int(payload.get("uid", 0) or 0)
+            expires_at = int(payload.get("exp", 0) or 0)
+            issued_at = int(payload.get("iat", now + 1) or 0)
+        except (TypeError, ValueError):
+            uid, expires_at, issued_at = 0, 0, now + 1
+        if uid < 1:
+            reason = "invalid_user"
+        elif payload.get("locale") != locale or locale not in {"fa-IR", "en-US", "ar-SA"}:
+            reason = "locale_mismatch"
+        elif expires_at < now - clock_skew_seconds:
+            reason = "expired_or_clock_behind"
+        elif issued_at > now + clock_skew_seconds:
+            reason = "clock_ahead"
+        elif not payload.get("nonce"):
+            reason = "missing_nonce"
+        else:
+            reason = ""
+    if reason:
+        age = now - issued_at if isinstance(payload, dict) else -1
+        print(
+            f"LIVE_SESSION_REJECTED: reason={reason} "
+            f"age_seconds={age} clock_skew_tolerance_seconds={clock_skew_seconds}",
+            flush=True,
+        )
         return None
     return payload
 
