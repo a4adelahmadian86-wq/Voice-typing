@@ -37,6 +37,9 @@ GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
 EDGE_TTS_VOICE = os.getenv("FARAST_EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 VOICE_ID = os.getenv("FARAST_VOICE_ID", "farast-fa-male-v1")
+# Subtle, fixed prosody for a steadier and more mature Persian delivery.
+EDGE_TTS_RATE = "-4%"
+EDGE_TTS_PITCH = "-2Hz"
 MAX_AUDIO_BYTES = max(1024, int(os.getenv("FARAST_MAX_AUDIO_BYTES", str(15 * 1024 * 1024))))
 MAX_TEXT_CHARS = max(1, int(os.getenv("FARAST_MAX_TEXT_CHARS", "1200")))
 GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -290,7 +293,12 @@ async def synthesize_mp3(text: str) -> bytes:
     retry_delays = (0.5, 1.25)
     for attempt in range(3):
         try:
-            communicate = edge_tts.Communicate(text=text, voice=EDGE_TTS_VOICE)
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=EDGE_TTS_VOICE,
+                rate=EDGE_TTS_RATE,
+                pitch=EDGE_TTS_PITCH,
+            )
             chunks: list[bytes] = []
             async for chunk in communicate.stream():
                 if chunk.get("type") == "audio" and chunk.get("data"):
