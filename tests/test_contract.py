@@ -95,9 +95,12 @@ def test_synthesize_mp3_retries_transient_provider_failures(monkeypatch):
     calls = {"count": 0}
 
     class FakeCommunicate:
-        def __init__(self, text, voice):
+        def __init__(self, text, voice, *, rate, pitch):
             assert text == "سلام"
             assert voice == main.EDGE_TTS_VOICE
+            assert voice == "fa-IR-FaridNeural"
+            assert rate == "-4%"
+            assert pitch == "-2Hz"
 
         async def stream(self):
             calls["count"] += 1
