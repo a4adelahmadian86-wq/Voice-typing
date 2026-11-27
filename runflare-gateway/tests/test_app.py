@@ -22,6 +22,7 @@ def client(monkeypatch):
     monkeypatch.setattr(gateway, "API_TOKEN", "test-gateway-token")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "")
     monkeypatch.setattr(gateway, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", False)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
@@ -302,6 +303,7 @@ def test_chat_completions_falls_back_from_gemini_to_groq(client, monkeypatch):
 
 
 def test_chat_completions_uses_local_llm_as_primary(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
