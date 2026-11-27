@@ -310,6 +310,7 @@ async def _stream_upstream_completions(payload: dict) -> Optional[StreamingRespo
 
     client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
     upstream = None
+    handed_off = False
     try:
         url = UPSTREAM_GATEWAY_URL
         if not url.endswith("/v1/chat/completions"):
@@ -339,6 +340,7 @@ async def _stream_upstream_completions(payload: dict) -> Optional[StreamingRespo
                     await upstream.aclose()
                     await client.aclose()
 
+            handed_off = True
             return StreamingResponse(
                 relay(),
                 media_type="text/event-stream",
@@ -352,11 +354,15 @@ async def _stream_upstream_completions(payload: dict) -> Optional[StreamingRespo
     except Exception:
         pass
     finally:
-        if upstream is None or not upstream.is_success:
+        if not handed_off:
+            if upstream is not None:
+                try:
+                    await upstream.aclose()
+                except Exception:
+                    pass
             await client.aclose()
 
     return None
-
 
 async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     # Prefer the external Cloudflare Worker gateway as a true token stream.
