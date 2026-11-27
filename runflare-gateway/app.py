@@ -241,7 +241,7 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
                 if item.get("role") == "system":
                     limit = 1000
                 elif index == len(body["messages"]) - 1 and item.get("role") == "user":
-                    limit = 900
+                    limit = 899
                 else:
                     limit = 400
                 item["content"] = content[:limit]
