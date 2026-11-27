@@ -1,6 +1,6 @@
-# FARAST Local LLM — Runflare
+# FARAST Local LLM — legacy optional component
 
-This service runs a quantized Qwen3 1.7B model using the official `llama.cpp` server image. It is a **small, self-hosted general-text engine**, not a ChatGPT-class model. The intent is to provide a no-API-billing primary path for short Persian conversations, rewriting, summarization, and lightweight classification, with optional cloud-provider fallback in `runflare-gateway`.
+This folder is retained for compatibility and historical work. It runs a quantized Qwen3 1.7B model using the official `llama.cpp` server image, but **Qwen3 is not the selected model for FARAST** and this service is not part of the current Runflare deployment path. The default deploy script now deploys only `runflare-gateway`, which forwards to the Cloudflare Worker. Do not create or start this LLM service unless the model is explicitly re-evaluated and approved.
 
 ## Why this model
 
@@ -12,9 +12,9 @@ This service runs a quantized Qwen3 1.7B model using the official `llama.cpp` se
 
 The model weights are downloaded by `llama.cpp` when the container starts and cached in the service filesystem. The weights are not committed to GitHub. If Runflare deletes the service at the three-month expiry, the new service downloads the model again.
 
-## Deploy
+## Legacy deployment (not selected)
 
-1. In Runflare, create a second Docker service for the model, separate from `runflare-gateway`. Use the free plan and set the service's Docker/build root to `runflare-llm`.
+The instructions below describe the previous optional Qwen deployment. They are retained for reference only and must not be used for the current FARAST architecture.
 2. Add `LLAMA_API_KEY` as a long random secret in the service environment. Keep it private.
 3. Deploy. The first start downloads the roughly 1.28 GB model and may take several minutes. Wait for `GET /health` to return HTTP 200; while weights are loading it can return 503.
 4. Copy the HTTPS service URL. In the gateway service, set:

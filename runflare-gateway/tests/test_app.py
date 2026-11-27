@@ -22,10 +22,15 @@ def client(monkeypatch):
     monkeypatch.setattr(gateway, "API_TOKEN", "test-gateway-token")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "")
     monkeypatch.setattr(gateway, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", False)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
-    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_URL", "")
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_TOKEN", "")
+    monkeypatch.setattr(gateway, "GEMINI_CHAT_ENABLED", False)
+    monkeypatch.setattr(gateway, "GROQ_CHAT_ENABLED", False)
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "upstream")
     monkeypatch.setattr(gateway, "RENDER_ASR_URL", "")
     monkeypatch.setattr(gateway, "RENDER_ASR_TOKEN", "")
     monkeypatch.setattr(gateway, "RENDER_TTS_URL", "")
@@ -157,9 +162,124 @@ def test_synthesize_falls_back_to_render_when_edge_tts_fails(client, monkeypatch
     assert response.content == b"render-mp3-data"
 
 
+
+def test_chat_completions_routes_through_the_configured_upstream_gateway(client, monkeypatch):
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_URL", "https://farast-ai-gateway.example.workers.dev")
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_TOKEN", "worker-upstream-secret")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "upstream")
+    calls = []
+
+    async def fake_provider(provider, model, payload):
+        calls.append((provider, model))
+        assert payload["messages"] == [{"role": "user", "content": "سلام"}]
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "پاسخ از درگاه بیرونی"}}]}, ensure_ascii=False).encode()
+        return 200, body, "application/json"
+
+    monkeypatch.setattr(gateway, "_chat_provider_request", fake_provider)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-farast-ai-provider"] == "upstream"
+    assert response.json()["choices"][0]["message"]["content"] == "پاسخ از درگاه بیرونی"
+    assert calls == [("upstream", "farast-general")]
+
+
+def test_upstream_provider_uses_only_the_configured_gateway_url_and_token(client, monkeypatch):
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_URL", "https://farast-ai-gateway.example.workers.dev")
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_TOKEN", "worker-upstream-secret")
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+        headers = {"content-type": "application/json"}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["body"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", FakeClient)
+    payload = {"messages": [{"role": "user", "content": "سلام"}]}
+    code, body, content_type = asyncio.run(
+        gateway._chat_provider_request("upstream", "farast-general", payload)
+    )
+
+    assert code == 200
+    assert content_type == "application/json"
+    assert captured["url"] == "https://farast-ai-gateway.example.workers.dev/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer worker-upstream-secret"
+    assert captured["body"]["model"] == "farast-general"
+    assert json.loads(body)["choices"][0]["message"]["content"] == "ok"
+
+
+def test_streaming_prefers_upstream_gateway_and_relays_sse(client, monkeypatch):
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_URL", "https://farast-ai-gateway.example.workers.dev")
+    monkeypatch.setattr(gateway, "UPSTREAM_GATEWAY_TOKEN", "worker-upstream-secret")
+    monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "upstream")
+    captured = {}
+
+    class FakeUpstream:
+        is_success = True
+        headers = {"content-type": "text/event-stream"}
+
+        async def aiter_raw(self):
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def build_request(self, method, url, headers, json):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["body"] = json
+            return {"url": url, "headers": headers, "json": json}
+
+        async def send(self, request, stream=False):
+            assert stream is True
+            return FakeUpstream()
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", FakeClient)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "farast-general", "stream": True, "messages": [{"role": "user", "content": "سلام"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-farast-ai-provider"] == "upstream"
+    assert captured["url"] == "https://farast-ai-gateway.example.workers.dev/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer worker-upstream-secret"
+    assert captured["body"]["stream"] is True
+    assert "[DONE]" in response.text
+
 def test_chat_completions_falls_back_from_gemini_to_groq(client, monkeypatch):
     monkeypatch.setattr(gateway, "GEMINI_API_KEY", "gemini-test-key")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "GEMINI_CHAT_ENABLED", True)
+    monkeypatch.setattr(gateway, "GROQ_CHAT_ENABLED", True)
     monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "gemini")
     calls = []
 
@@ -183,6 +303,7 @@ def test_chat_completions_falls_back_from_gemini_to_groq(client, monkeypatch):
 
 
 def test_chat_completions_uses_local_llm_as_primary(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     monkeypatch.setattr(gateway, "LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
@@ -207,9 +328,11 @@ def test_chat_completions_uses_local_llm_as_primary(client, monkeypatch):
 
 
 def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "GROQ_CHAT_ENABLED", True)
     monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
     calls = []
 
@@ -232,6 +355,7 @@ def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monk
 
 
 def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     captured = {}
@@ -278,6 +402,7 @@ def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
     assert json.loads(body) == {"ok": True}
 
 def test_chat_completions_streams_local_llm_sse(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     captured = {}
@@ -329,6 +454,7 @@ def test_streaming_wraps_full_groq_fallback_as_sse(client, monkeypatch):
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setattr(gateway, "GROQ_CHAT_ENABLED", True)
     monkeypatch.setattr(gateway, "AI_PRIMARY_PROVIDER", "local")
 
     async def fake_provider(provider, model, payload):

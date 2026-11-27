@@ -17,10 +17,15 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+UPSTREAM_GATEWAY_URL = os.getenv("FARAST_UPSTREAM_GATEWAY_URL", "").strip().rstrip("/")
+UPSTREAM_GATEWAY_TOKEN = os.getenv("FARAST_UPSTREAM_GATEWAY_TOKEN", "").strip()
+GEMINI_CHAT_ENABLED = os.getenv("GEMINI_CHAT_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+GROQ_CHAT_ENABLED = os.getenv("GROQ_CHAT_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+LOCAL_LLM_ENABLED = os.getenv("LOCAL_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
-AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "local").strip().lower()
+AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "upstream").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
 EDGE_TTS_AR_VOICE = os.getenv("EDGE_TTS_AR_VOICE", "ar-SA-HamedNeural").strip()
@@ -61,9 +66,14 @@ def health() -> dict:
 def ready() -> dict:
     asr_ready = bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN))
     tts_ready = True
-    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
+    llm_ready = bool(
+        (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN)
+        or (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
+        or (GEMINI_CHAT_ENABLED and GEMINI_API_KEY)
+        or (GROQ_CHAT_ENABLED and GROQ_API_KEY)
+    )
     return {
-        "status": "ready" if asr_ready and tts_ready and llm_ready else "degraded",
+        "status": "ready" if llm_ready else "degraded",
         "asr_ready": asr_ready,
         "tts_ready": tts_ready,
         "llm_ready": llm_ready,
@@ -75,8 +85,14 @@ def status() -> dict:
     return {
         "asr_ready": bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN)),
         "tts_ready": True,
-        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
-        "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "llm_ready": bool(
+            (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN)
+            or (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
+            or (GEMINI_CHAT_ENABLED and GEMINI_API_KEY)
+            or (GROQ_CHAT_ENABLED and GROQ_API_KEY)
+        ),
+        "upstream_gateway_ready": bool(UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN),
+        "local_llm_ready": bool(LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
         "primary_llm": AI_PRIMARY_PROVIDER,
         "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
         "tts_engine": "edge-tts-with-render-fallback",
@@ -225,7 +241,7 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
                 if item.get("role") == "system":
                     limit = 1000
                 elif index == len(body["messages"]) - 1 and item.get("role") == "user":
-                    limit = 900
+                    limit = 899
                 else:
                     limit = 400
                 item["content"] = content[:limit]
@@ -237,10 +253,17 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
 
 
 async def _chat_provider_request(provider: str, model: str, payload: dict) -> tuple[int, bytes, str]:
-    if provider == "local":
+    if provider == "upstream":
+        key = UPSTREAM_GATEWAY_TOKEN
+        if not UPSTREAM_GATEWAY_URL:
+            raise RuntimeError("FARAST upstream gateway URL is not configured")
+        url = UPSTREAM_GATEWAY_URL
+        if not url.endswith("/v1/chat/completions"):
+            url += "/v1/chat/completions"
+    elif provider == "local":
         key = LOCAL_LLM_API_KEY
-        if not LOCAL_LLM_URL:
-            raise RuntimeError("Local LLM URL is not configured")
+        if not (LOCAL_LLM_ENABLED and LOCAL_LLM_URL):
+            raise RuntimeError("Local LLM is disabled or its URL is not configured")
         url = LOCAL_LLM_URL
         if not url.endswith("/v1/chat/completions"):
             url += "/v1/chat/completions"
@@ -282,9 +305,75 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
     return response.status_code, response.content, response.headers.get("content-type", "application/json")
 
 
+async def _stream_upstream_completions(payload: dict) -> Optional[StreamingResponse]:
+    if not (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN):
+        return None
+
+    client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+    upstream = None
+    handed_off = False
+    try:
+        url = UPSTREAM_GATEWAY_URL
+        if not url.endswith("/v1/chat/completions"):
+            url += "/v1/chat/completions"
+        body = dict(payload)
+        body["model"] = str(payload.get("model") or "farast-general")
+        body["stream"] = True
+        request = client.build_request(
+            "POST",
+            url,
+            headers={
+                "Authorization": f"Bearer {UPSTREAM_GATEWAY_TOKEN}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            json=body,
+        )
+        upstream = await client.send(request, stream=True)
+        content_type = upstream.headers.get("content-type", "")
+        if upstream.is_success and "text/event-stream" in content_type.lower():
+            async def relay():
+                try:
+                    async for chunk in upstream.aiter_raw():
+                        if chunk:
+                            yield chunk
+                finally:
+                    await upstream.aclose()
+                    await client.aclose()
+
+            handed_off = True
+            return StreamingResponse(
+                relay(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Farast-AI-Provider": "upstream",
+                },
+            )
+        await upstream.aread()
+    except Exception:
+        pass
+    finally:
+        if not handed_off:
+            if upstream is not None:
+                try:
+                    await upstream.aclose()
+                except Exception:
+                    pass
+            await client.aclose()
+
+    return None
+
 async def _stream_chat_completions(payload: dict) -> StreamingResponse:
-    # Try the local llama.cpp server as a true token stream first.
-    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+    # Prefer the external Cloudflare Worker gateway as a true token stream.
+    if AI_PRIMARY_PROVIDER == "upstream":
+        upstream_response = await _stream_upstream_completions(payload)
+        if upstream_response is not None:
+            return upstream_response
+
+    # Optional legacy local llama.cpp streaming path.
+    if LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
         client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
         upstream = None
         try:
@@ -324,18 +413,21 @@ async def _stream_chat_completions(payload: dict) -> StreamingResponse:
     # If local streaming is unavailable, wrap the first working provider's complete response
     # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
     requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"upstream", "local", "gemini", "groq"} else "upstream"
+    order = [primary] + [provider for provider in ("upstream", "local", "gemini", "groq") if provider != primary]
     fallback_payload = dict(payload)
     fallback_payload["stream"] = False
     for provider in order:
         if provider == "local":
             continue
-        if provider == "gemini":
-            if not GEMINI_API_KEY: continue
+        if provider == "upstream":
+            if not (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN): continue
+            model = requested_model or "farast-general"
+        elif provider == "gemini":
+            if not (GEMINI_CHAT_ENABLED and GEMINI_API_KEY): continue
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
         else:
-            if not GROQ_API_KEY: continue
+            if not (GROQ_CHAT_ENABLED and GROQ_API_KEY): continue
             model = GROQ_CHAT_MODEL
         try:
             code, raw, content_type = await _chat_provider_request(provider, model, fallback_payload)
@@ -366,21 +458,25 @@ async def chat_completions(payload: dict) -> Response:
         return await _stream_chat_completions(payload)
 
     requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"upstream", "local", "gemini", "groq"} else "upstream"
+    order = [primary] + [provider for provider in ("upstream", "local", "gemini", "groq") if provider != primary]
     last_status = 503
     for provider in order:
-        if provider == "local":
+        if provider == "upstream":
+            model = requested_model or "farast-general"
+            if not (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN):
+                continue
+        elif provider == "local":
             model = LOCAL_LLM_MODEL
-            if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+            if not (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
                 continue
         elif provider == "gemini":
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
-            if not GEMINI_API_KEY:
+            if not (GEMINI_CHAT_ENABLED and GEMINI_API_KEY):
                 continue
         else:
             model = GROQ_CHAT_MODEL
-            if not GROQ_API_KEY:
+            if not (GROQ_CHAT_ENABLED and GROQ_API_KEY):
                 continue
         try:
             code, body, content_type = await _chat_provider_request(provider, model, payload)
@@ -395,4 +491,5 @@ async def chat_completions(payload: dict) -> Response:
         except Exception:
             continue
 
-    raise HTTPException(status_code=503 if last_status < 500 else last_status, detail="AI text generation is temporarily unavailable")
+    status_code = last_status if last_status in {408, 425, 429} or last_status >= 500 else 503
+    raise HTTPException(status_code=status_code, detail="AI text generation is temporarily unavailable")

@@ -1,4 +1,3 @@
-```python
 from __future__ import annotations
 
 import io
@@ -377,4 +376,3 @@ def synthesize(request: SynthesizeRequest) -> Response:
             status_code=500,
             detail="Speech synthesis failed",
         ) from exc
-```
