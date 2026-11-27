@@ -87,7 +87,7 @@ def status() -> dict:
         "tts_ready": True,
         "llm_ready": bool(
             (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN)
-            or (LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
+            or (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
             or (GEMINI_CHAT_ENABLED and GEMINI_API_KEY)
             or (GROQ_CHAT_ENABLED and GROQ_API_KEY)
         ),
