@@ -238,7 +238,7 @@ def test_streaming_prefers_upstream_gateway_and_relays_sse(client, monkeypatch):
         headers = {"content-type": "text/event-stream"}
 
         async def aiter_raw(self):
-            yield b"data: [DONE]\\n\\n"
+            yield b"data: [DONE]\n\n"
 
         async def aclose(self):
             return None
