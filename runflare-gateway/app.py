@@ -21,6 +21,7 @@ UPSTREAM_GATEWAY_URL = os.getenv("FARAST_UPSTREAM_GATEWAY_URL", "").strip().rstr
 UPSTREAM_GATEWAY_TOKEN = os.getenv("FARAST_UPSTREAM_GATEWAY_TOKEN", "").strip()
 GEMINI_CHAT_ENABLED = os.getenv("GEMINI_CHAT_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 GROQ_CHAT_ENABLED = os.getenv("GROQ_CHAT_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+LOCAL_LLM_ENABLED = os.getenv("LOCAL_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
@@ -67,7 +68,7 @@ def ready() -> dict:
     tts_ready = True
     llm_ready = bool(
         (UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN)
-        or (LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
+        or (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
         or (GEMINI_CHAT_ENABLED and GEMINI_API_KEY)
         or (GROQ_CHAT_ENABLED and GROQ_API_KEY)
     )
@@ -91,7 +92,7 @@ def status() -> dict:
             or (GROQ_CHAT_ENABLED and GROQ_API_KEY)
         ),
         "upstream_gateway_ready": bool(UPSTREAM_GATEWAY_URL and UPSTREAM_GATEWAY_TOKEN),
-        "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "local_llm_ready": bool(LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
         "primary_llm": AI_PRIMARY_PROVIDER,
         "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
         "tts_engine": "edge-tts-with-render-fallback",
@@ -261,8 +262,8 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
             url += "/v1/chat/completions"
     elif provider == "local":
         key = LOCAL_LLM_API_KEY
-        if not LOCAL_LLM_URL:
-            raise RuntimeError("Local LLM URL is not configured")
+        if not (LOCAL_LLM_ENABLED and LOCAL_LLM_URL):
+            raise RuntimeError("Local LLM is disabled or its URL is not configured")
         url = LOCAL_LLM_URL
         if not url.endswith("/v1/chat/completions"):
             url += "/v1/chat/completions"
@@ -372,7 +373,7 @@ async def _stream_chat_completions(payload: dict) -> StreamingResponse:
             return upstream_response
 
     # Optional legacy local llama.cpp streaming path.
-    if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+    if LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
         client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
         upstream = None
         try:
@@ -467,7 +468,7 @@ async def chat_completions(payload: dict) -> Response:
                 continue
         elif provider == "local":
             model = LOCAL_LLM_MODEL
-            if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+            if not (LOCAL_LLM_ENABLED and LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
                 continue
         elif provider == "gemini":
             model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
