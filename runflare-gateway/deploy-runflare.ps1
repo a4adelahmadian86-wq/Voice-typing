@@ -9,7 +9,7 @@ if (-not (Get-Command runflare -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Deploying FARAST AI Gateway from: $PSScriptRoot"
-Write-Host "If the old three-month service was deleted, select the newly created project/service when the CLI asks."
+Write-Host "If the three-month service was deleted, first create a new project and Docker service in the Runflare dashboard; the CLI cannot create them. Then select that project/service when prompted."
 runflare deploy
 if ($LASTEXITCODE -ne 0) { throw "Runflare deploy failed. Check CLI output and Runflare service logs." }
 Write-Host "Deployment command completed. Verify /health and authenticated /v1/status before connecting production traffic."
