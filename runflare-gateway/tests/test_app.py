@@ -328,6 +328,7 @@ def test_chat_completions_uses_local_llm_as_primary(client, monkeypatch):
 
 
 def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     monkeypatch.setattr(gateway, "GROQ_API_KEY", "groq-test-key")
@@ -354,6 +355,7 @@ def test_chat_completions_falls_back_to_groq_when_local_model_fails(client, monk
 
 
 def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     captured = {}
@@ -400,6 +402,7 @@ def test_local_provider_bounds_context_and_output_tokens(client, monkeypatch):
     assert json.loads(body) == {"ok": True}
 
 def test_chat_completions_streams_local_llm_sse(client, monkeypatch):
+    monkeypatch.setattr(gateway, "LOCAL_LLM_ENABLED", True)
     monkeypatch.setattr(gateway, "LOCAL_LLM_URL", "https://local-llm.example")
     monkeypatch.setattr(gateway, "LOCAL_LLM_API_KEY", "local-test-key")
     captured = {}
