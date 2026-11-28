@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets
@@ -12,15 +13,14 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "FARAST AI Gateway"
 API_TOKEN = os.getenv("FARAST_GATEWAY_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3").strip()
-GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
+CLOUDFLARE_LLM_MODEL = os.getenv("FARAST_CLOUDFLARE_LLM_MODEL", "@cf/qwen/qwen3-30b-a3b-fp8").strip()
+CLOUDFLARE_HEAVY_MODEL = os.getenv("FARAST_CLOUDFLARE_HEAVY_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast").strip()
+CLOUDFLARE_ASR_MODEL = os.getenv("FARAST_CLOUDFLARE_ASR_MODEL", "@cf/openai/whisper-large-v3-turbo").strip()
 LOCAL_LLM_URL = os.getenv("FARAST_LOCAL_LLM_URL", "").strip().rstrip("/")
 LOCAL_LLM_API_KEY = os.getenv("FARAST_LOCAL_LLM_API_KEY", "").strip()
 LOCAL_LLM_MODEL = os.getenv("FARAST_LOCAL_LLM_MODEL", "Qwen3-1.7B-Q4_K_M").strip()
-AI_PRIMARY_PROVIDER = os.getenv("AI_PRIMARY_PROVIDER", "local").strip().lower()
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "fa-IR-FaridNeural").strip()
 EDGE_TTS_EN_VOICE = os.getenv("EDGE_TTS_EN_VOICE", "en-US-AriaNeural").strip()
 EDGE_TTS_AR_VOICE = os.getenv("EDGE_TTS_AR_VOICE", "ar-SA-HamedNeural").strip()
@@ -59,47 +59,56 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> dict:
-    asr_ready = bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN))
-    tts_ready = True
-    llm_ready = bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY)
+    cloudflare_configured = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
+    asr_configured = cloudflare_configured or bool(RENDER_ASR_URL and RENDER_ASR_TOKEN)
+    llm_configured = cloudflare_configured or bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY)
     return {
-        "status": "ready" if asr_ready and tts_ready and llm_ready else "degraded",
-        "asr_ready": asr_ready,
-        "tts_ready": tts_ready,
-        "llm_ready": llm_ready,
+        "status": "ready" if asr_configured and llm_configured else "degraded",
+        "asr_configured": asr_configured,
+        "tts_configured": True,
+        "llm_configured": llm_configured,
+        "note": "Configuration readiness only; upstream inference is checked by a real request.",
     }
 
 
 @app.get("/v1/status", dependencies=[Depends(authorize)])
 def status() -> dict:
+    cloudflare_configured = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
     return {
-        "asr_ready": bool(GROQ_API_KEY or (RENDER_ASR_URL and RENDER_ASR_TOKEN)),
-        "tts_ready": True,
-        "llm_ready": bool((LOCAL_LLM_URL and LOCAL_LLM_API_KEY) or GEMINI_API_KEY or GROQ_API_KEY),
-        "local_llm_ready": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
-        "primary_llm": AI_PRIMARY_PROVIDER,
-        "asr_model": GROQ_ASR_MODEL if GROQ_API_KEY else ("render-fallback" if RENDER_ASR_URL else None),
+        "asr_configured": cloudflare_configured or bool(RENDER_ASR_URL and RENDER_ASR_TOKEN),
+        "tts_configured": True,
+        "llm_configured": cloudflare_configured or bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "cloudflare_configured": cloudflare_configured,
+        "cloudflare_llm_model": CLOUDFLARE_LLM_MODEL if cloudflare_configured else None,
+        "cloudflare_heavy_model": CLOUDFLARE_HEAVY_MODEL if cloudflare_configured else None,
+        "local_llm_configured": bool(LOCAL_LLM_URL and LOCAL_LLM_API_KEY),
+        "asr_model": CLOUDFLARE_ASR_MODEL if cloudflare_configured else ("render-fallback" if RENDER_ASR_URL and RENDER_ASR_TOKEN else None),
         "tts_engine": "edge-tts-with-render-fallback",
     }
 
 
-async def _groq_transcribe(filename: str, data: bytes, mime: str, language: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("Groq ASR is not configured")
-    payload = {"model": GROQ_ASR_MODEL, "language": language, "temperature": "0", "response_format": "json"}
+async def _cloudflare_transcribe(filename: str, data: bytes, mime: str, locale: str) -> str:
+    if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
+        raise RuntimeError("Cloudflare Workers AI is not configured")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_ASR_MODEL}"
+    payload = {
+        "audio": base64.b64encode(data).decode("ascii"),
+        "task": "transcribe",
+        "language": LOCALE_TO_LANGUAGE[locale],
+    }
     async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
         response = await client.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            data=payload,
-            files={"file": (filename, data, mime)},
+            url,
+            headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}", "Content-Type": "application/json"},
+            json=payload,
         )
     if not response.is_success:
-        raise RuntimeError(f"Groq ASR returned HTTP {response.status_code}")
-    text = str(response.json().get("text", "")).strip()
-    if not text:
-        raise RuntimeError("Groq ASR returned empty text")
-    return text
+        raise RuntimeError(f"Cloudflare ASR returned HTTP {response.status_code}")
+    result = response.json().get("result", {})
+    transcript = str(result.get("text", response.json().get("text", ""))).strip()
+    if not transcript:
+        raise RuntimeError("Cloudflare ASR returned empty text")
+    return transcript
 
 
 async def _render_transcribe(filename: str, data: bytes, mime: str, locale: str) -> str:
@@ -129,23 +138,20 @@ async def transcribe(audio: UploadFile = File(...), locale: str = Form("fa-IR"))
         raise HTTPException(status_code=400, detail="Audio file is empty")
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Audio exceeds configured size limit")
-    filename = (audio.filename or "recording.webm").replace("/", "_").replace("\\", "_")[:128]
+    filename = (audio.filename or "recording.webm").replace("/", "_").replace(chr(92), "_")[:128]
     mime = audio.content_type or "application/octet-stream"
-
-    if GROQ_API_KEY:
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
         try:
-            text = await _groq_transcribe(filename, data, mime, LOCALE_TO_LANGUAGE[locale])
-            return {"text": text, "engine": "groq-whisper", "model": GROQ_ASR_MODEL}
+            transcript = await _cloudflare_transcribe(filename, data, mime, locale)
+            return {"text": transcript, "engine": "cloudflare-workers-ai", "model": CLOUDFLARE_ASR_MODEL}
         except Exception:
             pass
-
     if RENDER_ASR_URL and RENDER_ASR_TOKEN:
         try:
-            text = await _render_transcribe(filename, data, mime, locale)
-            return {"text": text, "engine": "render-fallback", "model": "configured-render-asr"}
+            transcript = await _render_transcribe(filename, data, mime, locale)
+            return {"text": transcript, "engine": "render-asr-fallback", "model": "configured-render-asr"}
         except Exception:
             pass
-
     raise HTTPException(status_code=503, detail="Speech recognition is temporarily unavailable")
 
 
@@ -237,42 +243,20 @@ def _prepare_local_payload(payload: dict, model: str) -> dict:
 
 
 async def _chat_provider_request(provider: str, model: str, payload: dict) -> tuple[int, bytes, str]:
-    if provider == "local":
+    if provider == "cloudflare":
+        if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
+            raise RuntimeError("Cloudflare Workers AI is not configured")
+        key = CLOUDFLARE_API_TOKEN
+        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"
+    else:
+        if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
+            raise RuntimeError("Local LLM is not configured")
         key = LOCAL_LLM_API_KEY
-        if not LOCAL_LLM_URL:
-            raise RuntimeError("Local LLM URL is not configured")
         url = LOCAL_LLM_URL
         if not url.endswith("/v1/chat/completions"):
             url += "/v1/chat/completions"
-    elif provider == "gemini":
-        key = GEMINI_API_KEY
-        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    else:
-        key = GROQ_API_KEY
-        url = "https://api.groq.com/openai/v1/chat/completions"
-    if not key:
-        raise RuntimeError(f"{provider} is not configured")
     body = _prepare_local_payload(payload, model) if provider == "local" else dict(payload)
     body["model"] = model
-    if provider == "gemini":
-        # Gemini 3.8+ no longer accepts legacy sampling controls such as temperature.
-        body.pop("temperature", None)
-        body.pop("top_p", None)
-        body.pop("top_k", None)
-    if provider == "groq":
-        output_format = body.get("response_format")
-        if isinstance(output_format, dict) and output_format.get("type") == "json_schema":
-            schema = (output_format.get("json_schema") or {}).get("schema")
-            messages = body.get("messages")
-            if schema and isinstance(messages, list):
-                schema_hint = "Return only valid JSON matching this schema: " + json.dumps(schema, ensure_ascii=False)
-                system_message = next((item for item in messages if isinstance(item, dict) and item.get("role") == "system"), None)
-                if system_message is not None:
-                    system_message["content"] = str(system_message.get("content", "")) + "\n\n" + schema_hint
-                else:
-                    messages.insert(0, {"role": "system", "content": schema_hint})
-            # Groq JSON mode is the portable fallback; Laravel validates the returned shape.
-            body["response_format"] = {"type": "json_object"}
     async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
         response = await client.post(
             url,
@@ -282,72 +266,81 @@ async def _chat_provider_request(provider: str, model: str, payload: dict) -> tu
     return response.status_code, response.content, response.headers.get("content-type", "application/json")
 
 
-async def _stream_chat_completions(payload: dict) -> StreamingResponse:
-    # Try the local llama.cpp server as a true token stream first.
+def _chat_providers(requested_model: str) -> list[tuple[str, str]]:
+    heavy_requested = requested_model in {"farast-heavy", "colab-heavy"}
+    providers: list[tuple[str, str]] = []
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+        model = CLOUDFLARE_HEAVY_MODEL if heavy_requested else CLOUDFLARE_LLM_MODEL
+        providers.append(("cloudflare", model))
     if LOCAL_LLM_URL and LOCAL_LLM_API_KEY:
+        providers.append(("local", LOCAL_LLM_MODEL))
+    return providers
+
+
+async def _stream_chat_completions(payload: dict) -> StreamingResponse:
+    requested_model = str(payload.get("model") or "").strip()
+    providers = _chat_providers(requested_model)
+    for provider, model in providers:
         client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
         upstream = None
         try:
-            url = LOCAL_LLM_URL if LOCAL_LLM_URL.endswith("/v1/chat/completions") else LOCAL_LLM_URL + "/v1/chat/completions"
-            body = _prepare_local_payload(payload, LOCAL_LLM_MODEL)
+            if provider == "cloudflare":
+                url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"
+                key = CLOUDFLARE_API_TOKEN
+                body = dict(payload)
+            else:
+                url = LOCAL_LLM_URL if LOCAL_LLM_URL.endswith("/v1/chat/completions") else LOCAL_LLM_URL + "/v1/chat/completions"
+                key = LOCAL_LLM_API_KEY
+                body = _prepare_local_payload(payload, model)
+            body["model"] = model
             body["stream"] = True
             request = client.build_request(
                 "POST", url,
-                headers={"Authorization": f"Bearer {LOCAL_LLM_API_KEY}", "Content-Type": "application/json", "Accept": "text/event-stream"},
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "text/event-stream"},
                 json=body,
             )
             upstream = await client.send(request, stream=True)
             if upstream.is_success:
-                async def relay():
+                async def relay(response=upstream, http_client=client):
                     try:
-                        async for chunk in upstream.aiter_raw():
+                        async for chunk in response.aiter_raw():
                             if chunk:
                                 yield chunk
                     finally:
-                        await upstream.aclose()
-                        await client.aclose()
+                        await response.aclose()
+                        await http_client.aclose()
                 return StreamingResponse(
                     relay(), media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": "local"},
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": provider},
                 )
             await upstream.aread()
-            await upstream.aclose()
         except Exception:
-            if upstream is not None:
-                try: await upstream.aclose()
-                except Exception: pass
+            pass
         finally:
-            # The streaming response owns the client after success; on errors close it here.
             if upstream is None or not upstream.is_success:
+                if upstream is not None:
+                    try:
+                        await upstream.aclose()
+                    except Exception:
+                        pass
                 await client.aclose()
 
-    # If local streaming is unavailable, wrap the first working provider's complete response
-    # in SSE frames. This keeps the browser contract stable, although this fallback is not token-streamed.
-    requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
     fallback_payload = dict(payload)
     fallback_payload["stream"] = False
-    for provider in order:
-        if provider == "local":
-            continue
-        if provider == "gemini":
-            if not GEMINI_API_KEY: continue
-            model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
-        else:
-            if not GROQ_API_KEY: continue
-            model = GROQ_CHAT_MODEL
+    for provider, model in providers:
         try:
-            code, raw, content_type = await _chat_provider_request(provider, model, fallback_payload)
-            if not 200 <= code < 300: continue
+            code, raw, _ = await _chat_provider_request(provider, model, fallback_payload)
+            if not 200 <= code < 300:
+                continue
             data = json.loads(raw.decode("utf-8"))
             answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not isinstance(answer, str) or not answer.strip(): continue
+            if not isinstance(answer, str) or not answer.strip():
+                continue
             async def one_shot_sse(text: str):
                 for offset in range(0, len(text), 24):
                     frame = {"choices": [{"index": 0, "delta": {"content": text[offset:offset + 24]}}]}
-                    yield ("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n").encode("utf-8")
-                yield b"data: [DONE]\n\n"
+                    yield ("data: " + json.dumps(frame, ensure_ascii=False) + "\\n\\n").encode("utf-8")
+                yield b"data: [DONE]\\n\\n"
             return StreamingResponse(
                 one_shot_sse(answer), media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Farast-AI-Provider": provider},
@@ -366,22 +359,9 @@ async def chat_completions(payload: dict) -> Response:
         return await _stream_chat_completions(payload)
 
     requested_model = str(payload.get("model") or "").strip()
-    primary = AI_PRIMARY_PROVIDER if AI_PRIMARY_PROVIDER in {"local", "gemini", "groq"} else "local"
-    order = [primary] + [provider for provider in ("local", "gemini", "groq") if provider != primary]
+    providers = _chat_providers(requested_model)
     last_status = 503
-    for provider in order:
-        if provider == "local":
-            model = LOCAL_LLM_MODEL
-            if not (LOCAL_LLM_URL and LOCAL_LLM_API_KEY):
-                continue
-        elif provider == "gemini":
-            model = requested_model if requested_model.startswith("gemini-") else GEMINI_MODEL
-            if not GEMINI_API_KEY:
-                continue
-        else:
-            model = GROQ_CHAT_MODEL
-            if not GROQ_API_KEY:
-                continue
+    for provider, model in providers:
         try:
             code, body, content_type = await _chat_provider_request(provider, model, payload)
             if 200 <= code < 300:
@@ -394,5 +374,4 @@ async def chat_completions(payload: dict) -> Response:
             last_status = code
         except Exception:
             continue
-
     raise HTTPException(status_code=503 if last_status < 500 else last_status, detail="AI text generation is temporarily unavailable")
